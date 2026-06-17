@@ -1,4 +1,4 @@
-#include <GL/glew.h>
+#include <epoxy/gl.h>
 #include <GLFW/glfw3.h>
 
 #include "imgui.h"
@@ -39,6 +39,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "GLFW init failed\n");
         return 1;
     }
+    glfwSetErrorCallback([](int code, const char* msg){
+        std::fprintf(stderr, "GLFW error %d: %s\n", code, msg);
+    });
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -53,10 +56,9 @@ int main(int argc, char** argv) {
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // vsync
 
-    if(glewInit() != GLEW_OK) {
-        std::fprintf(stderr, "GLEW init failed\n");
-        return 1;
-    }
+    // epoxy auto-initializes on first GL call — just verify context is live
+    std::printf("[main] OpenGL %s | %s\n",
+                glGetString(GL_VERSION), glGetString(GL_RENDERER));
 
     // ── ImGui ─────────────────────────────────────────────────────────────
     IMGUI_CHECKVERSION();

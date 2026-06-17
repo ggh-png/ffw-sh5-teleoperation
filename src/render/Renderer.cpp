@@ -1,6 +1,6 @@
 #include "Renderer.hpp"
 #include "io/STLLoader.hpp"
-#include <GL/glew.h>
+#include <epoxy/gl.h>
 #include <stdexcept>
 #include <cstdio>
 
@@ -106,7 +106,8 @@ void Renderer::drawNode(const SceneNode& node,
        m_meshes[node.meshIndex].valid())
     {
         m_phong.use();
-        m_phong.setMat4("uModel", node.worldTransform);
+        Mat4 model = node.worldTransform * Mat4::scaling(node.meshScale);
+        m_phong.setMat4("uModel", model);
         m_phong.setMat4("uView",  view);
         m_phong.setMat4("uProj",  proj);
         m_phong.setMat4("uNormal", node.worldTransform.normalMatrix());

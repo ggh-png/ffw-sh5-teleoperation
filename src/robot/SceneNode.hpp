@@ -20,7 +20,8 @@ struct SceneNode {
     Mat4 worldTransform = Mat4::identity();
 
     // Rendering: index into RobotModel::meshes (-1 = no mesh)
-    int meshIndex = -1;
+    int  meshIndex = -1;
+    Vec3 meshScale = {1,1,1}; // per-mesh scale (e.g. 0.001 for mm→m STLs)
 
     // Color tint for visualization (0-1 RGB)
     Vec3 color = {0.7f, 0.7f, 0.75f};

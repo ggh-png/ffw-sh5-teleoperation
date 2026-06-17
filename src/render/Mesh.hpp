@@ -1,6 +1,6 @@
 #pragma once
 #include "io/STLLoader.hpp"
-#include <GL/glew.h>
+#include <epoxy/gl.h>
 #include <vector>
 
 // GPU-side mesh: VAO + VBO (interleaved pos+normal) + EBO

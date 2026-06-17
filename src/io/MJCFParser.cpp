@@ -66,7 +66,8 @@ static JointType parseJointType(const char* s) {
 static void parseBody(const XMLElement* bodyElem,
                       SceneNode*        parent,
                       RobotModel&       model,
-                      const std::unordered_map<std::string,std::string>& meshMap)
+                      const std::unordered_map<std::string,std::string>& meshMap,
+                      const std::unordered_map<std::string,Vec3>& meshScaleMap)
 {
     auto node = std::make_unique<SceneNode>();
     node->name     = bodyElem->Attribute("name") ? bodyElem->Attribute("name") : "";
@@ -115,7 +116,6 @@ static void parseBody(const XMLElement* bodyElem,
 
         auto it = meshMap.find(meshName);
         if(it != meshMap.end()) {
-            // Assign mesh index (add path if new)
             auto pathIt = std::find(model.meshPaths.begin(),
                                     model.meshPaths.end(), it->second);
             if(pathIt == model.meshPaths.end()) {
@@ -125,6 +125,9 @@ static void parseBody(const XMLElement* bodyElem,
                 node->meshIndex = static_cast<int>(
                     pathIt - model.meshPaths.begin());
             }
+            auto scaleIt = meshScaleMap.find(meshName);
+            if(scaleIt != meshScaleMap.end())
+                node->meshScale = scaleIt->second;
         }
         break; // first mesh geom only
     }
@@ -136,7 +139,7 @@ static void parseBody(const XMLElement* bodyElem,
     for(const XMLElement* child = bodyElem->FirstChildElement("body");
         child; child = child->NextSiblingElement("body"))
     {
-        parseBody(child, rawNode, model, meshMap);
+        parseBody(child, rawNode, model, meshMap, meshScaleMap);
     }
 }
 
@@ -157,19 +160,30 @@ std::unique_ptr<RobotModel> MJCFParser::parse(const std::string& xmlPath,
         ? fs::path(xmlPath).parent_path().string()
         : baseDir;
 
-    // ── 1. Build mesh name → absolute path map ──────────────────────────────
+    // ── 0. Read <compiler meshdir="..."> to resolve mesh paths ─────────────
+    fs::path meshBase = fs::path(base);
+    const XMLElement* compiler = root->FirstChildElement("compiler");
+    if(compiler) {
+        const char* meshdir = compiler->Attribute("meshdir");
+        if(meshdir && meshdir[0] != '\0')
+            meshBase = fs::path(base) / meshdir;
+    }
+
+    // ── 1. Build mesh name → path/scale maps ────────────────────────────────
     std::unordered_map<std::string,std::string> meshMap;
+    std::unordered_map<std::string,Vec3>        meshScaleMap;
 
     const XMLElement* assets = root->FirstChildElement("asset");
     if(assets) {
         for(const XMLElement* m = assets->FirstChildElement("mesh");
             m; m = m->NextSiblingElement("mesh"))
         {
-            const char* name = m->Attribute("name");
-            const char* file = m->Attribute("file");
+            const char* name  = m->Attribute("name");
+            const char* file  = m->Attribute("file");
             if(name && file) {
-                fs::path p = fs::path(base) / file;
-                meshMap[name] = p.string();
+                meshMap[name] = (meshBase / file).string();
+                const char* sc = m->Attribute("scale");
+                if(sc) meshScaleMap[name] = parseVec3(sc, {1,1,1});
             }
         }
     }
@@ -186,7 +200,7 @@ std::unique_ptr<RobotModel> MJCFParser::parse(const std::string& xmlPath,
         for(const XMLElement* body = wb->FirstChildElement("body");
             body; body = body->NextSiblingElement("body"))
         {
-            parseBody(body, model->root.get(), *model, meshMap);
+            parseBody(body, model->root.get(), *model, meshMap, meshScaleMap);
         }
     }
 

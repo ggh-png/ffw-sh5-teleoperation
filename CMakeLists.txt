@@ -8,7 +8,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ── External packages (apt) ──────────────────────────────────────────────────
 find_package(OpenGL REQUIRED)
 find_package(glfw3  REQUIRED)
-find_package(GLEW   REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(EPOXY REQUIRED epoxy)
 find_package(Bullet REQUIRED)
 
 # tinyxml2: try cmake config first, fall back to manual
@@ -43,17 +44,23 @@ target_include_directories(ffw_teleop PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${BULLET_INCLUDE_DIRS}
+    ${EPOXY_INCLUDE_DIRS}
 )
 
 target_link_libraries(ffw_teleop PRIVATE
     OpenGL::GL
     glfw
-    GLEW::GLEW
+    ${EPOXY_LIBRARIES}
     ${BULLET_LIBRARIES}
     tinyxml2::tinyxml2
 )
 
 target_compile_options(ffw_teleop PRIVATE -O2 -Wall -Wextra -Wno-unused-parameter)
+
+# Tell ImGui backend to skip its own GL loader; force-include epoxy so GL
+# types are available in imgui_impl_opengl3.cpp without patching it
+target_compile_definitions(ffw_teleop PRIVATE IMGUI_IMPL_OPENGL_LOADER_CUSTOM)
+target_compile_options(ffw_teleop PRIVATE -include epoxy/gl.h)
 
 # ── Copy assets to build dir ─────────────────────────────────────────────────
 add_custom_command(TARGET ffw_teleop POST_BUILD

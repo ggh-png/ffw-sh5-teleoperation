@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/ggh/ffw-sh5-teleoperation/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

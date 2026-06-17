@@ -49,8 +49,8 @@ void InputManager::update(float dt) {
     // ── Teleop command ────────────────────────────────────────────────────
     buildTeleopCmd(dt);
 
-    // ── Edge detection bookkeeping ────────────────────────────────────────
-    for(int k = 0; k <= GLFW_KEY_LAST; ++k)
+    // ── Edge detection bookkeeping (valid key range: SPACE=32 ~ LAST=348) ──
+    for(int k = GLFW_KEY_SPACE; k <= GLFW_KEY_LAST; ++k)
         m_prevKeys[k] = glfwGetKey(m_window, k);
 }
 
