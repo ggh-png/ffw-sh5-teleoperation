@@ -1,0 +1,6 @@
+[submodule "third_party/imgui"]
+	path = third_party/imgui
+	url = https://github.com/ocornut/imgui.git
+[submodule "assets/ffw_sh5"]
+	path = assets/ffw_sh5
+	url = https://github.com/ROBOTIS-GIT/robotis_mujoco_menagerie.git
