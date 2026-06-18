@@ -38,11 +38,24 @@ public:
     }
 
     void onPan(float dx, float dy) {
-        // Move target in camera's local XY plane
         Vec3 e = eye();
         Vec3 forward = (target - e).normalized();
         Vec3 right   = forward.cross({0,1,0}).normalized();
         Vec3 up      = right.cross(forward);
         target -= (right * dx - up * dy) * 0.005f * radius;
+    }
+
+    // Returns unit direction of a ray through NDC pixel (ndcX,ndcY ∈ [-1,1]).
+    // aspect = width / height.
+    Vec3 pickRay(float ndcX, float ndcY, float aspect) const {
+        float t = std::tan(fovY * 0.5f);
+        Vec3 e = eye();
+        Vec3 f = (target - e).normalized();
+        // Stable up reference
+        Vec3 worldUp = (std::abs(f.dot({0.f, 1.f, 0.f})) < 0.99f)
+                     ? Vec3{0.f, 1.f, 0.f} : Vec3{1.f, 0.f, 0.f};
+        Vec3 r = f.cross(worldUp).normalized();
+        Vec3 u = r.cross(f);
+        return (r * (ndcX * t * aspect) + u * (ndcY * t) + f).normalized();
     }
 };

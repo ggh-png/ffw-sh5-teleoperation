@@ -25,6 +25,15 @@ struct Quaternion {
         return qx * qy * qz;
     }
 
+    // Tait-Bryan ZYX: q = Rz(yaw) * Ry(pitch) * Rx(roll)
+    // Matches the extraction order of toRPY() — use this to round-trip RPY sliders.
+    static Quaternion fromRPY(float roll, float pitch, float yaw) {
+        auto qx = fromAxisAngle({1,0,0}, roll);
+        auto qy = fromAxisAngle({0,1,0}, pitch);
+        auto qz = fromAxisAngle({0,0,1}, yaw);
+        return qz * qy * qx;
+    }
+
     Quaternion operator*(const Quaternion& o) const {
         return {
             w*o.w - x*o.x - y*o.y - z*o.z,
@@ -48,6 +57,16 @@ struct Quaternion {
         Vec3 qv = {x, y, z};
         Vec3 t  = 2.0f * qv.cross(v);
         return v + w * t + qv.cross(t);
+    }
+
+    // Convert to Euler RPY (extrinsic XYZ = intrinsic ZYX).
+    // Returns {roll, pitch, yaw} in radians.
+    void toRPY(float& roll, float& pitch, float& yaw) const {
+        Quaternion q = normalized();
+        float sinp = 2.f*(q.w*q.y - q.z*q.x);
+        pitch = (std::fabs(sinp)>=1.f) ? std::copysign(1.5707963f,sinp) : std::asin(sinp);
+        roll  = std::atan2(2.f*(q.w*q.x+q.y*q.z), 1.f-2.f*(q.x*q.x+q.y*q.y));
+        yaw   = std::atan2(2.f*(q.w*q.z+q.x*q.y), 1.f-2.f*(q.y*q.y+q.z*q.z));
     }
 
     // Spherical linear interpolation

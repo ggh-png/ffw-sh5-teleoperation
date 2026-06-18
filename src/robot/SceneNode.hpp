@@ -5,6 +5,16 @@
 #include <vector>
 #include <memory>
 
+// Inertial properties from MJCF <inertial> element.
+// Used to configure Bullet rigid-body mass/inertia for dynamic simulation.
+struct Inertial {
+    float mass        = 0.f;            // kg
+    Vec3  com         = {};             // centre of mass in body frame [m]
+    Vec3  diagInertia = {};             // principal moments [kg·m²]
+    Quaternion frame  = Quaternion::identity(); // principal-axes orientation
+    bool  valid       = false;          // true only when parsed from MJCF
+};
+
 struct SceneNode {
     std::string name;
 
@@ -25,6 +35,11 @@ struct SceneNode {
 
     // Color tint for visualization (0-1 RGB)
     Vec3 color = {0.7f, 0.7f, 0.75f};
+
+    // ── Physics properties (from MJCF <inertial> / collision <geom>) ───────
+    Inertial inertial;           // body mass/inertia from <inertial>
+    float    geomFriction = 0.7f; // sliding friction of first collision geom
+    float    geomRadius   = 0.f;  // cylinder/sphere collision radius (0 = mesh/box only)
 
     // Scene graph
     SceneNode*                            parent   = nullptr;

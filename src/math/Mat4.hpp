@@ -129,6 +129,43 @@ struct Mat4 {
         return m;
     }
 
+    // Orthographic projection  (maps [l,r]×[b,t]×[n,f] → NDC cube)
+    static Mat4 ortho(float l, float r, float b, float t,
+                      float zNear, float zFar) {
+        Mat4 m = zero();
+        m.at(0,0) =  2.f / (r - l);
+        m.at(1,1) =  2.f / (t - b);
+        m.at(2,2) = -2.f / (zFar - zNear);
+        m.at(0,3) = -(r + l) / (r - l);
+        m.at(1,3) = -(t + b) / (t - b);
+        m.at(2,3) = -(zFar + zNear) / (zFar - zNear);
+        m.at(3,3) = 1.f;
+        return m;
+    }
+
+    // Extract rotation as unit quaternion (assumes no shear/non-uniform scale)
+    Quaternion extractRotation() const {
+        float m00=at(0,0),m01=at(0,1),m02=at(0,2);
+        float m10=at(1,0),m11=at(1,1),m12=at(1,2);
+        float m20=at(2,0),m21=at(2,1),m22=at(2,2);
+        float trace = m00+m11+m22;
+        Quaternion q;
+        if(trace > 0.f) {
+            float s = 0.5f/std::sqrt(trace+1.f);
+            q.w=(0.25f/s); q.x=(m21-m12)*s; q.y=(m02-m20)*s; q.z=(m10-m01)*s;
+        } else if(m00>m11 && m00>m22) {
+            float s=2.f*std::sqrt(1.f+m00-m11-m22);
+            q.w=(m21-m12)/s; q.x=0.25f*s; q.y=(m01+m10)/s; q.z=(m02+m20)/s;
+        } else if(m11>m22) {
+            float s=2.f*std::sqrt(1.f+m11-m00-m22);
+            q.w=(m02-m20)/s; q.x=(m01+m10)/s; q.y=0.25f*s; q.z=(m12+m21)/s;
+        } else {
+            float s=2.f*std::sqrt(1.f+m22-m00-m11);
+            q.w=(m10-m01)/s; q.x=(m02+m20)/s; q.y=(m12+m21)/s; q.z=0.25f*s;
+        }
+        return q.normalized();
+    }
+
     // Normal matrix (upper-left 3×3 of inverse-transpose)
     // Approximation valid when uniform scale: just return upper-left
     Mat4 normalMatrix() const {

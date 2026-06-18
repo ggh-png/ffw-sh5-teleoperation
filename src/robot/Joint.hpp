@@ -12,26 +12,42 @@ enum class JointType {
 
 struct Joint {
     std::string name;
-    JointType   type  = JointType::Fixed;
-    Vec3        axis  = {0, 0, 1};   // rotation / translation axis (local body frame)
-    float       limitLo = -kPi;      // rad or m
-    float       limitHi =  kPi;
-    float       value   = 0.f;       // current position (rad or m)
+    JointType   type     = JointType::Fixed;
+    Vec3        axis     = {0, 0, 1};
+    bool        hasLimits = false; // false = unlimited (e.g. continuous wheel drive)
+    float       limitLo  = -kPi;
+    float       limitHi  =  kPi;
+    float       value    = 0.f;
 
-    // Clamp value to joint limits
+    // ── Dynamics (from MJCF <default> joint / <position> actuator) ─────────
+    float damping      = 0.f;    // Ns/rad  — viscous joint friction
+    float frictionLoss = 0.f;    // Nm      — Coulomb (dry) friction
+    float armature     = 0.f;    // kg·m²   — reflected rotor inertia
+    float kp           = 0.f;    // Nm/rad  — position servo gain
+    float forceMin     = -1e9f;  // Nm      — actuator force range lower bound
+    float forceMax     =  1e9f;  // Nm      — actuator force range upper bound
+    bool  isVelocityCtrl = false; // true = velocity controller (kp = kv); skip gravity sag
+
+    // ── Runtime physics state (written by JointDynamics, read by transform()) ─
+    // valueSag: gravity-induced static deflection [rad or m].
+    // Non-destructive — user's joint.value is not modified.
+    float valueSag = 0.f;
+
     void clamp() {
-        value = ::clamp(value, limitLo, limitHi);
+        if(hasLimits) value = ::clamp(value, limitLo, limitHi);
     }
 
-    // Local joint transform applied ON TOP OF the fixed body offset
+    // Local joint transform applied ON TOP OF the fixed body offset.
+    // Uses value + valueSag so gravity sag is transparent to control code.
     Mat4 transform() const {
+        const float q = value + valueSag;
         switch(type) {
             case JointType::Revolute:
                 return Mat4::fromQuaternion(
-                    Quaternion::fromAxisAngle(axis, value));
+                    Quaternion::fromAxisAngle(axis, q));
 
             case JointType::Prismatic:
-                return Mat4::translation(axis * value);
+                return Mat4::translation(axis * q);
 
             case JointType::Fixed:
             default:
