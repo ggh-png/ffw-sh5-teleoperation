@@ -261,4 +261,157 @@ public:
         return (ForwardKinematics::worldPosition(*endEffector) - targetPos).length()
                < cfg.tolerance;
     }
+
+    // ── Hierarchical IK: position first, orientation in null space ────────────
+    //
+    // Per iteration:
+    //   1. Position DLS:   Δθ_pos = Jp^T (Jp Jp^T + λ²I)^{-1} e_pos
+    //   2. Orientation in null space of position:
+    //      g_ori  = Jo^T * e_ori
+    //      Δθ_ori = g_ori − Jp^T (Jp Jp^T + λ²I)^{-1} Jp g_ori
+    //   3. Δθ = Δθ_pos + Δθ_ori   (clamped)
+    //
+    // This guarantees (to first order) that orientation adjustments don't
+    // disturb position.  Used when the user drags an RPY slider while the
+    // arm is already holding a position target.
+    static bool solveHierarchical(SceneNode*        root,
+                                  SceneNode*        endEffector,
+                                  const Vec3&       targetPos,
+                                  const Quaternion& targetRot,
+                                  IKConfig          cfg       = {},
+                                  SceneNode*        chainStop = nullptr)
+    {
+        static constexpr int kMaxJ = 16;
+
+        // Helper: 3×3 Gauss-Jordan, solves Ax=b, writes solution into b column
+        auto solve3 = [](float A[9], float b[3]) {
+            float aug[3*4];
+            for(int r = 0; r < 3; ++r) {
+                for(int c = 0; c < 3; ++c) aug[r*4+c] = A[r*3+c];
+                aug[r*4+3] = b[r];
+            }
+            for(int col = 0; col < 3; ++col) {
+                int piv = col;
+                for(int r = col+1; r < 3; ++r)
+                    if(std::fabs(aug[r*4+col]) > std::fabs(aug[piv*4+col])) piv = r;
+                if(piv != col)
+                    for(int c = 0; c <= 3; ++c) std::swap(aug[col*4+c], aug[piv*4+c]);
+                float d = aug[col*4+col];
+                if(std::fabs(d) < 1e-9f) continue;
+                for(int c = col; c <= 3; ++c) aug[col*4+c] /= d;
+                for(int r = 0; r < 3; ++r) {
+                    if(r == col) continue;
+                    float f = aug[r*4+col];
+                    for(int c = col; c <= 3; ++c) aug[r*4+c] -= f * aug[col*4+c];
+                }
+            }
+            b[0] = aug[0*4+3]; b[1] = aug[1*4+3]; b[2] = aug[2*4+3];
+        };
+
+        for(int iter = 0; iter < cfg.maxIter; ++iter) {
+            ForwardKinematics::compute(*root);
+
+            Vec3       eePos = ForwardKinematics::worldPosition(*endEffector);
+            Quaternion eeQ   = endEffector->worldTransform.extractRotation();
+
+            // Error vectors
+            Vec3 ePos = targetPos - eePos;
+
+            Quaternion qErr = (targetRot * eeQ.conjugate()).normalized();
+            if(qErr.w < 0.f) {
+                qErr.w=-qErr.w; qErr.x=-qErr.x; qErr.y=-qErr.y; qErr.z=-qErr.z;
+            }
+            float eOri[3] = {
+                2.f * qErr.x * cfg.orientWeight,
+                2.f * qErr.y * cfg.orientWeight,
+                2.f * qErr.z * cfg.orientWeight
+            };
+
+            float posErr = ePos.length();
+            float rotErr = std::sqrt(eOri[0]*eOri[0]+eOri[1]*eOri[1]+eOri[2]*eOri[2])
+                           / std::max(cfg.orientWeight, 1e-6f);
+            if(posErr < cfg.tolerance && rotErr < cfg.tolerance * 2.f) return true;
+
+            // Build Jp (position, 3×N) and Jo (orientation, 3×N), col-major
+            float Jp[kMaxJ*3] = {};
+            float Jo[kMaxJ*3] = {};
+            std::array<SceneNode*, kMaxJ> joints{};
+            int N = 0;
+
+            for(SceneNode* nd = endEffector;
+                nd && nd != chainStop && N < kMaxJ;
+                nd = nd->parent)
+            {
+                if(nd->joint.type != JointType::Revolute &&
+                   nd->joint.type != JointType::Prismatic) continue;
+                Vec3 axis = nd->worldTransform
+                                .transformDir(nd->joint.axis).normalized();
+                if(nd->joint.type == JointType::Revolute) {
+                    Vec3 jPos = nd->worldTransform.transformPoint({0,0,0});
+                    Vec3 r    = eePos - jPos;
+                    Vec3 Jp_  = axis.cross(r);
+                    Jp[N*3+0] = Jp_.x; Jp[N*3+1] = Jp_.y; Jp[N*3+2] = Jp_.z;
+                } else {
+                    Jp[N*3+0] = axis.x; Jp[N*3+1] = axis.y; Jp[N*3+2] = axis.z;
+                }
+                Jo[N*3+0] = axis.x; Jo[N*3+1] = axis.y; Jo[N*3+2] = axis.z;
+                joints[N++] = nd;
+            }
+            if(N == 0) break;
+
+            // A = Jp Jp^T + λ²I  (3×3)
+            float lam2 = cfg.dampingLambda * cfg.dampingLambda;
+            float A[9] = {};
+            for(int r = 0; r < 3; ++r)
+                for(int c = 0; c < 3; ++c) {
+                    float v = (r==c) ? lam2 : 0.f;
+                    for(int k = 0; k < N; ++k) v += Jp[k*3+r] * Jp[k*3+c];
+                    A[r*3+c] = v;
+                }
+
+            // Step 1 — position DLS:  x_pos = A^{-1} e_pos
+            float xp[3] = { ePos.x, ePos.y, ePos.z };
+            { float Atmp[9]; for(int i=0;i<9;++i) Atmp[i]=A[i]; solve3(Atmp, xp); }
+
+            // Δθ_pos = Jp^T x_pos
+            float dq_pos[kMaxJ] = {};
+            for(int k = 0; k < N; ++k)
+                for(int r = 0; r < 3; ++r)
+                    dq_pos[k] += Jp[k*3+r] * xp[r];
+
+            // Step 2 — orientation in null space
+            // g_ori = Jo^T e_ori
+            float g_ori[kMaxJ] = {};
+            for(int k = 0; k < N; ++k)
+                for(int r = 0; r < 3; ++r)
+                    g_ori[k] += Jo[k*3+r] * eOri[r];
+
+            // v = Jp * g_ori  (3-vector)
+            float v3[3] = {};
+            for(int r = 0; r < 3; ++r)
+                for(int k = 0; k < N; ++k)
+                    v3[r] += Jp[k*3+r] * g_ori[k];
+
+            // y = A^{-1} v
+            { float Atmp[9]; for(int i=0;i<9;++i) Atmp[i]=A[i]; solve3(Atmp, v3); }
+
+            // proj = Jp^T y
+            float proj[kMaxJ] = {};
+            for(int k = 0; k < N; ++k)
+                for(int r = 0; r < 3; ++r)
+                    proj[k] += Jp[k*3+r] * v3[r];
+
+            // Δθ = Δθ_pos + (g_ori − proj),  clamped
+            float cap = cfg.maxJointDelta;
+            for(int k = 0; k < N; ++k) {
+                float dq = dq_pos[k] + (g_ori[k] - proj[k]);
+                dq = dq < -cap ? -cap : (dq > cap ? cap : dq);
+                joints[k]->joint.value += dq;
+                joints[k]->joint.clamp();
+            }
+        }
+
+        ForwardKinematics::compute(*root);
+        return true;
+    }
 };

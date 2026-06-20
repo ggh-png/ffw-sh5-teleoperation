@@ -62,6 +62,17 @@ std::vector<ObjectDesc> SceneLoader::load(const std::string& xmlPath) {
             parseFloats(geomEl->Attribute("size"), sz, 2);
             desc.radius     = sz[0];
             desc.halfHeight = sz[1];
+        } else if(strcmp(typeStr, "mesh") == 0) {
+            desc.type = ObjectDesc::Type::Mesh;
+            const char* file = geomEl->Attribute("file");
+            if(file) {
+                // Resolve file path relative to the XML directory
+                std::string xmlDir = xmlPath;
+                auto slash = xmlDir.find_last_of("/\\");
+                if(slash != std::string::npos) xmlDir.resize(slash + 1); else xmlDir = "./";
+                desc.meshFile = xmlDir + file;
+            }
+            geomEl->QueryFloatAttribute("scale", &desc.meshScale);
         } else {
             fprintf(stderr, "[SceneLoader] Unknown geom type '%s' — skipped\n", typeStr);
             continue;

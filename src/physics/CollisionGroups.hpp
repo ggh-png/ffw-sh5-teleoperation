@@ -18,7 +18,7 @@
 //   base      → ENV, OBJ
 //   arm links → (none via Bullet broadphase — Bullet-invisible)
 //   can       → ENV, HAND, ROBOT_BASE
-//   hand      → ENV, OBJ
+//   hand      → ENV, OBJ, HAND
 //
 // Why MASK_ROBOT_LINK = 0 (Bullet-invisible):
 //   Arm links are kinematic (infinite effective mass). Any overlap with a dynamic
@@ -44,5 +44,5 @@ namespace ColGroup {
     static constexpr int MASK_ROBOT_BASE = ENV | OBJ;
     static constexpr int MASK_ROBOT_LINK = 0;      // Bullet-invisible (see above)
     static constexpr int MASK_OBJ        = ENV | HAND | ROBOT_BASE;
-    static constexpr int MASK_HAND       = ENV | OBJ;
+    static constexpr int MASK_HAND       = ENV | OBJ | HAND;
 }

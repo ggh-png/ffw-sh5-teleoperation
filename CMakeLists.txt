@@ -11,6 +11,7 @@ find_package(glfw3  REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(EPOXY REQUIRED epoxy)
 find_package(Bullet REQUIRED)
+find_package(ZLIB REQUIRED)   # used by PNGLoader (minimal PNG decoder)
 
 # tinyxml2: try cmake config first, fall back to manual
 find_package(tinyxml2 CONFIG QUIET)
@@ -53,6 +54,7 @@ target_link_libraries(ffw_teleop PRIVATE
     ${EPOXY_LIBRARIES}
     ${BULLET_LIBRARIES}
     tinyxml2::tinyxml2
+    ZLIB::ZLIB
 )
 
 target_compile_options(ffw_teleop PRIVATE -O2 -Wall -Wextra -Wno-unused-parameter)

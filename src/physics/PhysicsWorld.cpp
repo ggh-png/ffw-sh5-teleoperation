@@ -1,5 +1,6 @@
 #include "PhysicsWorld.hpp"
 #include "physics/CollisionGroups.hpp"
+#include "io/STLLoader.hpp"
 #include <BulletDynamics/Featherstone/btMultiBodyDynamicsWorld.h>
 #include <BulletDynamics/Featherstone/btMultiBodyConstraintSolver.h>
 #include <cmath>
@@ -300,6 +301,44 @@ void PhysicsWorld::updateGraspedObjects(int side, const Vec3& palmPos,
     }
 }
 
+int PhysicsWorld::addMeshObject(const std::string& stlPath, float scale, float mass,
+                                const Vec3& pos, const Vec3& color, float friction) {
+    auto mesh = STLLoader::load(stlPath);
+    // Derive cylinder dimensions from STL bounding box (Z-up STL → Y-up physics)
+    float r = 0.030f * scale, halfH = 0.075f * scale;
+    if(!mesh.empty()) {
+        float xMax = 0, yMax = 0, zMin = 1e9f, zMax = -1e9f;
+        for(const auto& v : mesh.vertices) {
+            xMax = std::max(xMax, std::abs(v.x));
+            yMax = std::max(yMax, std::abs(v.y));
+            zMin = std::min(zMin, v.z);
+            zMax = std::max(zMax, v.z);
+        }
+        r     = std::max(xMax, yMax) * scale;
+        halfH = (zMax - zMin) * 0.5f * scale;
+    }
+    auto& obj = m_objects.emplace_back();
+    obj.shape = std::make_unique<btCylinderShape>(btVector3(r, halfH, r));
+    obj.shape->setMargin(0.005f);
+    obj.color = color; obj.mass = mass; obj.isMesh = true;
+    obj.radius = r; obj.halfHeight = halfH;
+    obj.state = std::make_unique<btDefaultMotionState>(
+        btTransform(btQuaternion::getIdentity(), btVector3(pos.x, pos.y, pos.z)));
+    btVector3 inertia(0,0,0);
+    obj.shape->calculateLocalInertia(mass, inertia);
+    btRigidBody::btRigidBodyConstructionInfo ci(mass, obj.state.get(), obj.shape.get(), inertia);
+    ci.m_restitution    = 0.1f / std::sqrt(m_impratio);
+    ci.m_friction       = friction;
+    ci.m_linearDamping  = 0.05f;
+    ci.m_angularDamping = 0.1f;
+    obj.body = std::make_unique<btRigidBody>(ci);
+    obj.body->setActivationState(DISABLE_DEACTIVATION);
+    obj.body->setCcdMotionThreshold(0.01f);
+    obj.body->setCcdSweptSphereRadius(0.015f);
+    m_world->addRigidBody(obj.body.get(), ColGroup::OBJ, ColGroup::MASK_OBJ);
+    return (int)m_objects.size() - 1;
+}
+
 // ── Mouse drag ────────────────────────────────────────────────────────────────
 
 void PhysicsWorld::beginMouseDrag(int idx) {
@@ -346,7 +385,7 @@ std::vector<PhysicsWorld::ObjState> PhysicsWorld::objectStates() const {
         obj.body->getMotionState()->getWorldTransform(t);
         auto& o=t.getOrigin(); auto q=t.getRotation();
         s.push_back({{o.x(),o.y(),o.z()},{q.w(),q.x(),q.y(),q.z()},
-                     obj.color,obj.radius,obj.halfHeight});
+                     obj.color,obj.radius,obj.halfHeight,obj.isMesh});
     }
     return s;
 }
@@ -382,6 +421,8 @@ void PhysicsWorld::spawnObjects(const std::vector<ObjectDesc>& descs) {
             addStaticBox(d.halfExtents, d.pos, d.color);
         } else if(d.type == ObjectDesc::Type::Cylinder) {
             addCylinder(d.radius, d.halfHeight, d.mass, d.pos, d.color);
+        } else if(d.type == ObjectDesc::Type::Mesh) {
+            addMeshObject(d.meshFile, d.meshScale, d.mass, d.pos, d.color, d.friction);
         }
     }
 }

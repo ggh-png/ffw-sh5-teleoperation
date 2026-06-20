@@ -2,7 +2,6 @@
 #include "imgui.h"
 #include "math/Math.hpp"
 #include "robot/Joint.hpp"
-#include <cstring>
 
 // ── Group name string helpers ─────────────────────────────────────────────────
 
@@ -121,14 +120,16 @@ bool JointPanel::draw(RobotModel& model) {
             ImGui::PopStyleColor();
         };
 
-        // Left arm position — DragFloat: 1mm/pixel, range ±1.5m
+        // Left arm position — locked (greyed-out) while orientation control is active.
         ImGui::PushStyleColor(ImGuiCol_FrameBg, {0.10f,0.30f,0.10f,0.8f});
+        ImGui::BeginDisabled(ikUseOrientation);
         ImGui::DragFloat("L-X (fwd)##iktlx", &ikTargetL.x, 0.001f,-1.5f,1.5f,"%.3f m");
         showPBar(ikTargetL.x, -1.5f, 1.5f);
         ImGui::DragFloat("L-Y (up) ##iktly", &ikTargetL.y, 0.001f,-0.5f,2.0f,"%.3f m");
         showPBar(ikTargetL.y, -0.5f, 2.0f);
         ImGui::DragFloat("L-Z (lat)##iktlz", &ikTargetL.z, 0.001f,-1.5f,1.5f,"%.3f m");
         showPBar(ikTargetL.z, -1.5f, 1.5f);
+        ImGui::EndDisabled();
 
         // Left arm orientation in degrees.
         // Base-local frame: X=fwd, Y=up, Z=lateral.
@@ -136,45 +137,64 @@ bool JointPanel::draw(RobotModel& model) {
         // fromRPY arg3 (Rz) rotates around LAT → user sees this as Pitch (tilt fwd/back).
         if(ikUseOrientation) {
             float rl,pl,yl; ikTargetRotL.toRPY(rl,pl,yl);
-            // pl=Ry↔Yaw display, yl=Rz↔Pitch display
-            float rldeg=toDeg(rl), pitchDeg=toDeg(yl), yawDeg=toDeg(pl);
-            bool chL = ImGui::SliderFloat("L-Roll##ikr",  &rldeg,   -180.f, 180.f, "%.1f deg");
-            chL |=     ImGui::SliderFloat("L-Pitch##ikp", &pitchDeg,-180.f, 180.f, "%.1f deg");
-            chL |=     ImGui::SliderFloat("L-Yaw##iky",   &yawDeg,  -180.f, 180.f, "%.1f deg");
+            // toRPY (ZYX): rl=Rx, pl=Ry, yl=Rz
+            // Axis assignment for arm reaching toward -Z (can direction):
+            //   Roll  = Rz (rotation around lateral Z) → spins palm around arm axis
+            //   Pitch = Rx (rotation around forward X) → tilts palm perpendicular to arm
+            //   Yaw   = Ry (rotation around up Y)      → turns palm left/right
+            // Swapped from base-convention (Roll=Rx, Pitch=Rz) because when the arm
+            // extends in -Z, Rx and Rz are both perpendicular to the arm and look the
+            // same; Rz is the true "spin" axis (roll) for that reach direction.
+            float rldeg=toDeg(yl), pitchDeg=toDeg(rl), yawDeg=toDeg(pl);
+            bool chL = ImGui::SliderFloat("L-Roll##ikr",  &rldeg,   -180.f, 180.f, "%.1f°");
+            chL |=     ImGui::SliderFloat("L-Pitch##ikp", &pitchDeg,-180.f, 180.f, "%.1f°");
+            chL |=     ImGui::SliderFloat("L-Yaw##iky",   &yawDeg,   -90.f,  90.f, "%.1f°");
             if(chL) {
-                ikTargetRotL = Quaternion::fromRPY(
-                    toRad(rldeg), toRad(yawDeg), toRad(pitchDeg));
-                ikRotChangedL = true;
+                // Update desired target; main.cpp slerps ikTargetRotL toward this.
+                ikDesiredRotL = Quaternion::fromRPY(
+                    toRad(pitchDeg), toRad(yawDeg), toRad(rldeg));
+                ikOrientControlL = true;
+                ikRotChangedL    = true;
             }
         }
         ImGui::PopStyleColor();
 
-        // Right arm position — DragFloat: 1mm/pixel
+        // Right arm position — locked (greyed-out) while orientation control is active.
         ImGui::PushStyleColor(ImGuiCol_FrameBg, {0.30f,0.10f,0.10f,0.8f});
+        ImGui::BeginDisabled(ikUseOrientation);
         ImGui::DragFloat("R-X (fwd)##iktrx", &ikTargetR.x, 0.001f,-1.5f,1.5f,"%.3f m");
         showPBar(ikTargetR.x, -1.5f, 1.5f);
         ImGui::DragFloat("R-Y (up) ##iktry", &ikTargetR.y, 0.001f,-0.5f,2.0f,"%.3f m");
         showPBar(ikTargetR.y, -0.5f, 2.0f);
         ImGui::DragFloat("R-Z (lat)##iktrz", &ikTargetR.z, 0.001f,-1.5f,1.5f,"%.3f m");
         showPBar(ikTargetR.z, -1.5f, 1.5f);
+        ImGui::EndDisabled();
 
-        // Right arm orientation — same axis mapping as left arm.
+        // Right arm orientation — same axis swap as left arm.
         if(ikUseOrientation) {
             float rr,pr,yr; ikTargetRotR.toRPY(rr,pr,yr);
-            // pr=Ry↔Yaw display, yr=Rz↔Pitch display
-            float rrdeg=toDeg(rr), pitchDeg=toDeg(yr), yawDeg=toDeg(pr);
-            bool chR = ImGui::SliderFloat("R-Roll##ikrr",  &rrdeg,   -180.f, 180.f, "%.1f deg");
-            chR |=     ImGui::SliderFloat("R-Pitch##ikpr", &pitchDeg,-180.f, 180.f, "%.1f deg");
-            chR |=     ImGui::SliderFloat("R-Yaw##ikyr",   &yawDeg,  -180.f, 180.f, "%.1f deg");
+            // Roll=Rz(yr), Pitch=Rx(rr), Yaw=Ry(pr) — same convention as left arm
+            float rrdeg=toDeg(yr), pitchDeg=toDeg(rr), yawDeg=toDeg(pr);
+            bool chR = ImGui::SliderFloat("R-Roll##ikrr",  &rrdeg,   -180.f, 180.f, "%.1f°");
+            chR |=     ImGui::SliderFloat("R-Pitch##ikpr", &pitchDeg,-180.f, 180.f, "%.1f°");
+            chR |=     ImGui::SliderFloat("R-Yaw##ikyr",   &yawDeg,   -90.f,  90.f, "%.1f°");
             if(chR) {
-                ikTargetRotR = Quaternion::fromRPY(
-                    toRad(rrdeg), toRad(yawDeg), toRad(pitchDeg));
-                ikRotChangedR = true;
+                ikDesiredRotR = Quaternion::fromRPY(
+                    toRad(pitchDeg), toRad(yawDeg), toRad(rrdeg));
+                ikOrientControlR = true;
+                ikRotChangedR    = true;
             }
         }
         ImGui::PopStyleColor();
 
+        bool prevOri = ikUseOrientation;
         ImGui::Checkbox("Use Orientation (RPY)", &ikUseOrientation);
+        if(prevOri && !ikUseOrientation) {
+            // Orientation mode disabled — stop orientation control so arm
+            // returns to pure position IK and syncs rotation from FK again.
+            ikOrientControlL = false;
+            ikOrientControlR = false;
+        }
         ImGui::Separator();
     }
 

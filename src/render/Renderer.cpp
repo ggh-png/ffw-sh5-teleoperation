@@ -1,9 +1,10 @@
 #include "Renderer.hpp"
 #include "io/STLLoader.hpp"
+#include "io/PNGLoader.hpp"
 #include <epoxy/gl.h>
 #include <cstdio>
 #include <cmath>
-#include <stdexcept>
+#include <algorithm>
 
 // ── Embedded shaders ─────────────────────────────────────────────────────────
 
@@ -67,6 +68,7 @@ void Renderer::shutdown() {
     if(m_gizVBO)   glDeleteBuffers(1, &m_gizVBO);
     if(m_shadowFBO) glDeleteFramebuffers(1, &m_shadowFBO);
     if(m_shadowTex) glDeleteTextures(1, &m_shadowTex);
+    if(m_canTex)    glDeleteTextures(1, &m_canTex);
 }
 
 // ── Shadow map ────────────────────────────────────────────────────────────────
@@ -216,27 +218,139 @@ void Renderer::drawNodeShadow(const SceneNode& node) {
     for(const auto& ch : node.children) drawNodeShadow(*ch);
 }
 
-// ── Dynamic cylinders ─────────────────────────────────────────────────────────
-void Renderer::drawObjects(const Mat4& view, const Mat4& proj) {
-    if(!m_cylinder.valid()) return;
-    for(const auto& o : objects) {
-        Mat4 mdl = Mat4::translation(o.pos)
-                 * Mat4::fromQuaternion(o.rot)
-                 * Mat4::scaling({o.radius, o.halfHeight, o.radius});
-        m_phong.setMat4("uModel", mdl);
-        m_phong.setMat4("uNormal", mdl.normalMatrix());
-        m_phong.setVec3("uObjectColor", o.color);
-        m_cylinder.draw();
+// ── Can mesh (STL) + optional diffuse texture ─────────────────────────────────
+void Renderer::loadCanMesh(const std::string& stlPath, float scale,
+                            const std::string& texPath) {
+    auto raw = STLLoader::load(stlPath);
+    if(raw.empty()) {
+        fprintf(stderr, "[Renderer] loadCanMesh: failed to load '%s'\n", stlPath.c_str());
+        return;
+    }
+
+    // Rotate STL Z-up → Y-up: (x,y,z)→(x, z, -y), then centre.
+    int nv = (int)raw.vertices.size();
+    float cx=0, cy=0, cz=0;
+    for(const auto& v : raw.vertices) { cx+=v.x*scale; cy+=v.z*scale; cz+=-v.y*scale; }
+    cx/=nv; cy/=nv; cz/=nv;
+
+    // Compute height range for V coordinate normalisation
+    float yMin= 1e9f, yMax=-1e9f;
+    for(const auto& v : raw.vertices) {
+        float y = v.z*scale - cy;
+        yMin = std::min(yMin, y);
+        yMax = std::max(yMax, y);
+    }
+    float yRange = (yMax > yMin) ? (yMax - yMin) : 1.f;
+
+    STLMesh m;
+    m.vertices.reserve(nv);
+    m.normals.reserve(nv);
+    m.indices.reserve(nv);
+    m.uvs.reserve(nv * 2);
+
+    constexpr float kTwoPi = 6.28318530718f;
+
+    for(int i=0; i<nv; ++i) {
+        const auto& v = raw.vertices[i];
+        const auto& n = raw.normals[i];
+
+        float px = v.x*scale - cx;
+        float py = v.z*scale - cy;
+        float pz = -v.y*scale - cz;
+
+        m.vertices.push_back({px, py, pz});
+        m.normals.push_back({n.x, n.z, -n.y});
+        m.indices.push_back((uint32_t)i);
+
+        // Cylindrical UV: U = azimuth in [0,1], V = height in [0,1]
+        float u = std::atan2f(pz, px) / kTwoPi + 0.5f;
+        float vv = (py - yMin) / yRange;
+        m.uvs.push_back(u);
+        m.uvs.push_back(vv);
+    }
+
+    m_canMesh.upload(m);
+    fprintf(stderr, "[Renderer] loadCanMesh: '%s' (%d tris, UV generated)\n",
+            stlPath.c_str(), nv/3);
+
+    // ── Load diffuse texture ──────────────────────────────────────────────────
+    if(!texPath.empty()) {
+        auto img = PNGLoader::load(texPath);
+        if(!img.empty()) {
+            if(m_canTex) glDeleteTextures(1, &m_canTex);
+            glGenTextures(1, &m_canTex);
+            glBindTexture(GL_TEXTURE_2D, m_canTex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                         img.width, img.height, 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, img.rgba.data());
+            glGenerateMipmap(GL_TEXTURE_2D);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            fprintf(stderr, "[Renderer] loadCanMesh: texture '%s' (%dx%d) uploaded\n",
+                    texPath.c_str(), img.width, img.height);
+        }
     }
 }
-void Renderer::drawObjectsShadow() {
-    if(!m_cylinder.valid()) return;
+
+// ── Dynamic objects (cylinder / STL mesh) ─────────────────────────────────────
+void Renderer::drawObjects(const Mat4& view, const Mat4& proj) {
     for(const auto& o : objects) {
-        Mat4 mdl = Mat4::translation(o.pos)
+        Mat4  mdl;
+        Mesh* mesh;
+        bool  useTex = false;
+
+        if(o.useMesh && m_canMesh.valid()) {
+            mdl    = Mat4::translation(o.pos) * Mat4::fromQuaternion(o.rot);
+            mesh   = &m_canMesh;
+            useTex = (m_canTex != 0);
+        } else {
+            if(!m_cylinder.valid()) continue;
+            mdl  = Mat4::translation(o.pos)
                  * Mat4::fromQuaternion(o.rot)
                  * Mat4::scaling({o.radius, o.halfHeight, o.radius});
+            mesh = &m_cylinder;
+        }
+
+        m_phong.setMat4("uModel",       mdl);
+        m_phong.setMat4("uNormal",      mdl.normalMatrix());
+        m_phong.setVec3("uObjectColor", o.color);
+        m_phong.setInt("uUseTexture",  useTex ? 1 : 0);
+
+        if(useTex) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, m_canTex);
+            m_phong.setInt("uTexDiffuse", 1);
+        }
+
+        mesh->draw();
+
+        if(useTex) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+    }
+    // Reset to default (non-textured) for subsequent phong draws
+    m_phong.setInt("uUseTexture", 0);
+}
+void Renderer::drawObjectsShadow() {
+    for(const auto& o : objects) {
+        Mat4 mdl;
+        Mesh* mesh;
+        if(o.useMesh && m_canMesh.valid()) {
+            mdl  = Mat4::translation(o.pos) * Mat4::fromQuaternion(o.rot);
+            mesh = &m_canMesh;
+        } else {
+            if(!m_cylinder.valid()) continue;
+            mdl  = Mat4::translation(o.pos)
+                 * Mat4::fromQuaternion(o.rot)
+                 * Mat4::scaling({o.radius, o.halfHeight, o.radius});
+            mesh = &m_cylinder;
+        }
         m_shadow.setMat4("uModel", mdl);
-        m_cylinder.draw();
+        mesh->draw();
     }
 }
 
@@ -475,7 +589,9 @@ void Renderer::render(RobotModel& model) {
         m_phong.setMat4("uLightSpace", m_lightSpaceMat);
         m_phong.setVec3("uLightPos",   kLightPos);
         m_phong.setVec3("uViewPos",    camera.eye());
-        m_phong.setInt ("uShadowMap",  0);
+        m_phong.setInt ("uShadowMap",   0);
+        m_phong.setInt ("uTexDiffuse",  1);
+        m_phong.setInt ("uUseTexture",  0);  // default off; drawObjects sets it per-object
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, m_shadowTex);
 

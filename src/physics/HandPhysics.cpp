@@ -178,6 +178,12 @@ void HandPhysics::buildHand(int side, btMultiBodyDynamicsWorld* world,
     // ── Collision shapes and link colliders ───────────────────────────────────
     H.colliders.emplace_back(nullptr);  // base placeholder
 
+    // Links are ordered by DFS: thumb (0-3), index (4-7), middle (8-11), ring (12-15).
+    // Encode (side, chain, localIdx) in userIndex so FingerChainFilter can block
+    // intra-chain pairs while allowing cross-chain (inter-finger) collision.
+    //   userIndex = side*40 + chainIdx*10 + localIdx
+    static constexpr int kLinksPerChain = 4;
+
     for(int i = 0; i < numLinks; ++i) {
         SceneNode* node = H.links[i].node;
         btConvexHullShape* shape = buildShape(node, meshPaths);
@@ -186,11 +192,18 @@ void HandPhysics::buildHand(int side, btMultiBodyDynamicsWorld* world,
         auto* col = new btMultiBodyLinkCollider(H.mb, i);
         if(shape) {
             col->setCollisionShape(shape);
-            col->setWorldTransform(btTransform(toBt(worldRot(node)), toBt(worldPos(node))));
-            // High friction for fingertips (rubber-like grip)
-            col->setFriction(1.5f);
-            col->setRestitution(0.02f);
+            // Initial transform: CoM world position (Featherstone uses CoM frames)
+            Vec3 comW = node->worldTransform.transformPoint(node->inertial.com);
+            col->setWorldTransform(btTransform(toBt(worldRot(node)), toBt(comW)));
+            col->setFriction(10.0f);
+            col->setRestitution(0.0f);
         }
+        int chainIdx = i / kLinksPerChain;
+        int localIdx = i % kLinksPerChain;
+        col->setUserIndex(side * 40 + chainIdx * 10 + localIdx);
+
+        col->setCcdMotionThreshold(0.005f);
+        col->setCcdSweptSphereRadius(0.010f);
         H.colliders.emplace_back(col);
         H.mb->getLink(i).m_collider = col;
         world->addCollisionObject(col, ColGroup::HAND, ColGroup::MASK_HAND);
@@ -223,6 +236,10 @@ void HandPhysics::build(btMultiBodyDynamicsWorld* world,
     // frame (60 Hz) gives effective kp at frame rate → dt×ωn=2.35 → unstable.
     // Running it inside the pre-tick callback keeps effective dt=0.002 s (500 Hz)
     // → dt×ωn=0.28 → stable.
+    // Broadphase filter: block intra-chain pairs (explosive impulses), allow cross-chain.
+    world->getBroadphase()->getOverlappingPairCache()
+         ->setOverlapFilterCallback(&m_chainFilter);
+
     s_preTickInstance = this;
     world->setInternalTickCallback(handPhysicsPreTick, nullptr, /*isPreTick=*/true);
 }

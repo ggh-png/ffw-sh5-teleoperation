@@ -6,13 +6,14 @@
 #include <vector>
 #include <memory>
 
-// Dynamic cylindrical object (cola can)
+// Dynamic object (cola can) — rendered as cylinder primitive or STL mesh
 struct RenderObj {
     Vec3       pos;
     Quaternion rot;
     Vec3       color      = {0.8f, 0.15f, 0.15f};
     float      radius     = 0.033f;
     float      halfHeight = 0.06f;
+    bool       useMesh    = false;  // true = use Renderer::m_canMesh
 };
 
 // Static box (table, floor, shelf, etc.)
@@ -61,6 +62,10 @@ public:
     void resize(int width, int height);
     void render(RobotModel& model);
     void shutdown();
+    // Call after init() to load an STL mesh for mesh-type dynamic objects.
+    // texPath: optional PNG diffuse texture (empty string = none).
+    void loadCanMesh(const std::string& stlPath, float scale = 1.f,
+                     const std::string& texPath = {});
 
 private:
     static constexpr int kShadowW = 2048;
@@ -77,6 +82,8 @@ private:
     std::vector<Mesh> m_meshes;
     Mesh              m_cylinder;   // unit cylinder (r=1, halfH=1)
     Mesh              m_box;        // unit box (-1,-1,-1)→(1,1,1)
+    Mesh              m_canMesh;    // STL-based can mesh (optional)
+    GLuint            m_canTex = 0; // diffuse texture for m_canMesh (0 = none)
 
     GLuint m_shadowFBO = 0;
     GLuint m_shadowTex = 0;

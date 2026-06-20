@@ -5,12 +5,14 @@
 
 // Describes one physics + render object loaded from a scene XML file.
 struct ObjectDesc {
-    enum class Type { Box, Cylinder } type = Type::Box;
+    enum class Type { Box, Cylinder, Mesh } type = Type::Box;
     std::string name;
     Vec3  pos         = {};
     Vec3  halfExtents = {};      // Box
     float radius      = 0.f;    // Cylinder
     float halfHeight  = 0.f;    // Cylinder
+    std::string meshFile  = {}; // Mesh: absolute path to STL
+    float meshScale   = 1.f;    // Mesh: uniform scale applied to vertices
     float mass        = 0.f;    // 0 = static, > 0 = dynamic
     float friction    = 0.5f;
     Vec3  color       = {0.8f, 0.8f, 0.8f};

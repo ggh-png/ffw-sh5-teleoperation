@@ -11,7 +11,7 @@
 
 // Dynamic grabbable object (cola can)
 struct GraspObj {
-    std::unique_ptr<btCylinderShape>      shape;
+    std::unique_ptr<btCollisionShape>     shape;   // btCylinderShape or convex hull
     std::unique_ptr<btDefaultMotionState> state;
     std::unique_ptr<btRigidBody>          body;
     btTransform graspRelTransform;     // can pose relative to palm at grasp time
@@ -21,6 +21,7 @@ struct GraspObj {
     float mass       = 0.35f;
     int   graspedBy  = -1;   // side holding it (-1 = free)
     bool  mouseDrag  = false;
+    bool  isMesh     = false; // true = STL mesh visual
 };
 
 // Static environment box (table, shelf, ...)
@@ -64,9 +65,14 @@ public:
     void setBaseKinematic(bool kinematic);
     bool isGrounded() const;
 
-    // ── Dynamic cylinders (can) ──────────────────────────────────────────────
+    // ── Dynamic objects (can) ────────────────────────────────────────────────
     int addCylinder(float r, float halfH, float mass,
                     const Vec3& pos, const Vec3& color);
+
+    // STL mesh object: physics = btCylinderShape fitted from mesh bounds,
+    // visual = STL mesh rendered by Renderer::m_canMesh.
+    int addMeshObject(const std::string& stlPath, float scale, float mass,
+                      const Vec3& pos, const Vec3& color, float friction = 0.5f);
 
     // Proximity check using palm position (from FK / ArticulatedRobot).
     // Returns distance from nearest object surface, for HUD ring.
@@ -96,6 +102,7 @@ public:
     struct ObjState {
         Vec3 pos; Quaternion rot;
         Vec3 color; float radius; float halfHeight;
+        bool isMesh = false;
     };
     std::vector<ObjState> objectStates() const;
 

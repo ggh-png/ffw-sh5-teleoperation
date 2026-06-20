@@ -20,12 +20,21 @@ public:
     // IK targets: position (base-local Y-up) + orientation
     Vec3       ikTargetL    = {0.3f,  1.2f, -0.4f};
     Vec3       ikTargetR    = {0.3f,  1.2f,  0.4f};
+    // ikTargetRot* — the "approach" quaternion, smoothly slerped toward ikDesiredRot*
+    // by main.cpp each frame.  IK uses this to minimize orientation error.
     Quaternion ikTargetRotL = Quaternion::identity();
     Quaternion ikTargetRotR = Quaternion::identity();
-    bool       ikUseOrientation = false;
+    // ikDesiredRot* — the slider-set goal.  May differ from ikTargetRot* while slerping.
+    Quaternion ikDesiredRotL = Quaternion::identity();
+    Quaternion ikDesiredRotR = Quaternion::identity();
+    bool       ikUseOrientation  = false;
+    // true = orientation control active; arm tracks ikDesiredRot* via slerp + null-space IK
+    bool       ikOrientControlL  = false;
+    bool       ikOrientControlR  = false;
 
-    // Set true by draw() when RPY slider was actively dragged this frame.
-    // main.cpp uses this to freeze XYZ IK target while orientation is adjusted.
+    // Set true by draw() when RPY slider was actively dragged this frame,
+    // OR by main.cpp when slerping is still in progress.
+    // Selects solveHierarchical (null-space) instead of solve6.
     bool       ikRotChangedL = false;
     bool       ikRotChangedR = false;
 

@@ -140,7 +140,12 @@ int main(int argc, char** argv) {
         for(const auto& d : descs) {
             if(d.type == ObjectDesc::Type::Box)
                 renderer.boxes.push_back({d.pos, Quaternion::identity(), d.color, d.halfExtents});
-            // Cylinders are driven by physics.objectStates() each frame (done below)
+            else if(d.type == ObjectDesc::Type::Mesh)
+                renderer.loadCanMesh(d.meshFile, d.meshScale,
+                    std::string(d.meshFile).replace(
+                        d.meshFile.rfind('/'), std::string::npos,
+                        "/textures/soda_can_color2.png"));
+            // Cylinders/Meshes are driven by physics.objectStates() each frame
         }
     }
 
@@ -749,13 +754,13 @@ int main(int argc, char** argv) {
             handPanel.isGrasping[side] = physics.isGrasping(side);
         }
 
-        // Physics cylinder objects → renderer
+        // Physics objects → renderer
         {
             auto states = physics.objectStates();
             renderer.objects.clear();
             for(const auto& s : states)
                 renderer.objects.push_back({s.pos, s.rot, s.color,
-                                             s.radius, s.halfHeight});
+                                             s.radius, s.halfHeight, s.isMesh});
         }
 
         // ── ImGui ─────────────────────────────────────────────────────────

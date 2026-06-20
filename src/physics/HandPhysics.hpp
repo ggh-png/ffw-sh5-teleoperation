@@ -62,6 +62,29 @@ public:
     }
 
 private:
+    // Broadphase filter: allow cross-finger collision while blocking
+    // within-finger-chain pairs that would cause explosive impulses.
+    //
+    // Hand link colliders are tagged with userIndex = side*40 + chain*10 + localIdx.
+    // Two colliders on the same (side, chain) share userIndex/10 → blocked.
+    // All other objects have userIndex < 0 (Bullet default) → always allowed.
+    struct FingerChainFilter : btOverlapFilterCallback {
+        bool needBroadphaseCollision(btBroadphaseProxy* p0,
+                                     btBroadphaseProxy* p1) const override {
+            bool defaultOk =
+                (p0->m_collisionFilterMask & p1->m_collisionFilterGroup) != 0 &&
+                (p1->m_collisionFilterMask & p0->m_collisionFilterGroup) != 0;
+            if(!defaultOk) return false;
+            auto* o0 = static_cast<btCollisionObject*>(p0->m_clientObject);
+            auto* o1 = static_cast<btCollisionObject*>(p1->m_clientObject);
+            int u0 = o0 ? o0->getUserIndex() : -1;
+            int u1 = o1 ? o1->getUserIndex() : -1;
+            if(u0 < 0 || u1 < 0) return true;
+            return (u0 / 10) != (u1 / 10);
+        }
+    };
+    FingerChainFilter m_chainFilter;
+
     struct LinkInfo {
         SceneNode* node;
         int        mbLinkIdx;

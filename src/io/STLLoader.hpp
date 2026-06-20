@@ -5,9 +5,10 @@
 #include <cstdint>
 
 struct STLMesh {
-    std::vector<Vec3> vertices;   // 3 per triangle, unindexed
-    std::vector<Vec3> normals;    // 1 per vertex (flat shading = same 3 per tri)
+    std::vector<Vec3>     vertices; // 3 per triangle, unindexed
+    std::vector<Vec3>     normals;  // 1 per vertex (flat shading = same 3 per tri)
     std::vector<uint32_t> indices;
+    std::vector<float>    uvs;      // optional: 2 floats (u,v) per vertex; empty = no UVs
 
     bool empty() const { return vertices.empty(); }
 };

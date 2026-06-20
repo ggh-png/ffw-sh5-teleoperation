@@ -35,9 +35,12 @@ void Mesh::upload(const STLMesh& stl) {
     release();
     if(stl.vertices.empty()) return;
 
+    bool hasUV = (stl.uvs.size() == stl.vertices.size() * 2);
+    int  floatsPerVert = hasUV ? 8 : 6;   // pos(3) + norm(3) [+ uv(2)]
     size_t vCount = stl.vertices.size();
+
     std::vector<float> vdata;
-    vdata.reserve(vCount * 6);
+    vdata.reserve(vCount * floatsPerVert);
     for(size_t i = 0; i < vCount; ++i) {
         vdata.push_back(stl.vertices[i].x);
         vdata.push_back(stl.vertices[i].y);
@@ -45,6 +48,10 @@ void Mesh::upload(const STLMesh& stl) {
         vdata.push_back(stl.normals[i].x);
         vdata.push_back(stl.normals[i].y);
         vdata.push_back(stl.normals[i].z);
+        if(hasUV) {
+            vdata.push_back(stl.uvs[i*2+0]);
+            vdata.push_back(stl.uvs[i*2+1]);
+        }
     }
 
     glGenVertexArrays(1, &m_vao);
@@ -63,18 +70,20 @@ void Mesh::upload(const STLMesh& stl) {
                  static_cast<GLsizeiptr>(stl.indices.size() * sizeof(uint32_t)),
                  stl.indices.data(), GL_STATIC_DRAW);
 
-    constexpr GLsizei stride = 6 * sizeof(float);
-    // position (location 0)
+    GLsizei stride = (GLsizei)(floatsPerVert * sizeof(float));
+    // location 0: position
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride,
-                          reinterpret_cast<void*>(0));
-    // normal (location 1)
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
+    // location 1: normal
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride,
-                          reinterpret_cast<void*>(3 * sizeof(float)));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)(3*sizeof(float)));
+    // location 2: UV (only when present)
+    if(hasUV) {
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, (void*)(6*sizeof(float)));
+    }
 
     glBindVertexArray(0);
-
     m_count = static_cast<GLsizei>(stl.indices.size());
 }
 
