@@ -71,7 +71,7 @@ void HandPanel::applyToModel(RobotModel& model,
         // 핑거 kThumbJoints 2번만 90도 꺾인 상태에서 시작, 나머지는 0에서 시작. (손가락이 펴진 상태)
         const float s = (side == 0) ? 1.f : -1.f;
         setJoint(model, kThumbJoints[side][0], kThumbClose[0] * tt);      // CMC
-        setJoint(model, kThumbJoints[side][1], s * 1.5708f);               // MCPyaw: ±90° fixed default
+        setJoint(model, kThumbJoints[side][1], s * 1.9199f);               // MCPyaw: ±110° fixed default
         setJoint(model, kThumbJoints[side][2], s * kThumbClose[2] * tt);  // MCP pitch
         setJoint(model, kThumbJoints[side][3], s * kThumbClose[3] * tt);  // IP
         // Fingers 0-2: index, middle, ring — driven by grip target
