@@ -32,11 +32,9 @@ void RobotCollider::build(btMultiBodyDynamicsWorld* world,
         // geometry and need convex hulls so the palm cannot pass through the table
         // or other robot links via the Jacobian-transpose collision resolution.
         const std::string& nm = node->name;
+        // Finger phalanges: 40+ tiny links per robot — too many for stable broadphase contact.
+        // Physical interaction with the can is handled by the arm + palm (hx5_) hulls.
         if(hasPrefix(nm, "finger_") || hasPrefix(nm, "thumb_")) continue;
-        // Exclude palm bases: HandPhysics btMultiBody base positions fingers from here.
-        // If hx5_l/r_base ConvexHulls were in ROBOT_LINK, they would push the can
-        // away before finger colliders (HAND group) could close around it.
-        if(hasPrefix(nm, "hx5_")) continue;
 
         STLMesh stl = STLLoader::load(meshPaths[node->meshIndex]);
         if(stl.empty()) continue;

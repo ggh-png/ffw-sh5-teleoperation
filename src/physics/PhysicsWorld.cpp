@@ -6,6 +6,13 @@
 #include <cmath>
 #include <algorithm>
 
+// Switch a GraspObj's broadphase collision mask without rebuilding the body.
+// Remove + re-add forces the broadphase to discard stale pair caches.
+static void refilterObj(btMultiBodyDynamicsWorld* world, btRigidBody* body, int newMask) {
+    world->removeRigidBody(body);
+    world->addRigidBody(body, ColGroup::OBJ, newMask);
+}
+
 // ── Constructor ───────────────────────────────────────────────────────────────
 
 PhysicsWorld::PhysicsWorld(const PhysicsOptions& opts) {
@@ -315,6 +322,8 @@ void PhysicsWorld::applyGripForce(int side, float grip,
                     obj.constraint.reset();
                 }
                 obj.graspedBy = -1;
+                // Restore full collision mask — arm links can push the can again
+                refilterObj(m_world.get(), obj.body.get(), ColGroup::MASK_OBJ_FREE);
                 obj.body->forceActivationState(ACTIVE_TAG);
                 obj.body->clearForces();
 
@@ -363,17 +372,21 @@ void PhysicsWorld::applyGripForce(int side, float grip,
         if(surfDist > kGraspRadius) continue;
 
         // ── ATTACH (btFixedConstraint) ────────────────────────────────────────
-        // frameInPalm = pose of the can centre in the palm's local frame
-        // frameInCan  = identity (can's origin in its own frame)
-        // The constraint maintains:  palm_world * frameInPalm == can_world
+        // frameInPalm = pose of the can centre in the palm's local frame.
+        // The constraint maintains:  palm_world * frameInPalm == can_world.
         obj.graspedBy = side;
+
+        // Disable arm-link collision while the constraint is active.
+        // Kinematic arm hulls would otherwise fight the constraint — they push
+        // the can away while the constraint pulls it back, causing oscillation.
+        // Arm ↔ can collision is re-enabled when the grip is released.
+        refilterObj(m_world.get(), obj.body.get(), ColGroup::MASK_OBJ_HELD);
+
         btTransform frameInPalm = palmT.inverse() * objT;
         obj.constraint = std::make_unique<btFixedConstraint>(
             *m_palmBody[side], *obj.body,
             frameInPalm, btTransform::getIdentity());
         obj.constraint->setBreakingImpulseThreshold(BT_LARGE_FLOAT);
-        // disableCollisionBetweenLinkedBodies=true: suppress palm-can contact
-        // (palm has MASK=0 anyway, but belt-and-suspenders)
         m_world->addConstraint(obj.constraint.get(), /*disableCollision=*/true);
     }
 }
@@ -385,6 +398,8 @@ void PhysicsWorld::beginMouseDrag(int idx) {
     auto& obj = m_objects[idx];
     if(obj.graspedBy >= 0) return;
     obj.mouseDrag = true;
+    // Can becomes kinematic during drag — arm contact irrelevant, skip broadphase work
+    refilterObj(m_world.get(), obj.body.get(), ColGroup::MASK_OBJ_HELD);
     obj.body->setCollisionFlags(
         obj.body->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
     obj.body->setActivationState(DISABLE_DEACTIVATION);
@@ -413,6 +428,8 @@ void PhysicsWorld::endMouseDrag(int idx) {
     obj.body->clearForces();
     obj.body->setLinearVelocity({0,0,0});
     obj.body->activate(true);
+    // Can is dynamic again — restore arm-link collision
+    refilterObj(m_world.get(), obj.body.get(), ColGroup::MASK_OBJ_FREE);
 }
 
 // ── Object states (for renderer) ──────────────────────────────────────────────
@@ -469,19 +486,20 @@ void PhysicsWorld::spawnObjects(const std::vector<ObjectDesc>& descs) {
 
 void PhysicsWorld::resetObjects() {
     for(auto& obj : m_objects) {
-        // Remove constraint before touching the body state
         if(obj.constraint) {
             m_world->removeConstraint(obj.constraint.get());
             obj.constraint.reset();
         }
         obj.graspedBy = -1;
         obj.mouseDrag = false;
-        // Clear any leftover kinematic flag (mouse-drag leaves it)
         obj.body->setCollisionFlags(
             obj.body->getCollisionFlags() & ~btCollisionObject::CF_KINEMATIC_OBJECT);
         btVector3 inertia(0,0,0);
         obj.shape->calculateLocalInertia(obj.mass, inertia);
         obj.body->setMassProps(obj.mass, inertia);
+
+        // Always restore full collision mask after reset
+        refilterObj(m_world.get(), obj.body.get(), ColGroup::MASK_OBJ_FREE);
 
         obj.state->setWorldTransform(obj.initialTransform);
         obj.body->setWorldTransform(obj.initialTransform);
