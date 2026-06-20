@@ -16,6 +16,10 @@ public:
     bool  graspReady[2]  = {false, false};
     bool  isGrasping[2]  = {false, false};
 
+    // Set to true by draw() when "Reset Objects" button is pressed.
+    // Main loop should act on this and clear it to false.
+    bool resetObjects = false;
+
     // Draw ImGui window.  Returns true if any joint value changed.
     bool draw();
 

@@ -116,6 +116,14 @@ bool HandPanel::draw() {
     ImGui::EndGroup();
 
     ImGui::Separator();
+
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4{0.7f, 0.2f, 0.2f, 1.f});
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{0.9f, 0.3f, 0.3f, 1.f});
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4{1.0f, 0.1f, 0.1f, 1.f});
+    if(ImGui::Button("Reset Objects", {-1, 0}))
+        resetObjects = true;
+    ImGui::PopStyleColor(3);
+
     ImGui::TextDisabled("Z=L grip  X=R grip  (or sliders above)");
     ImGui::End();
     return changed;

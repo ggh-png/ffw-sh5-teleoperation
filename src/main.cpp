@@ -545,7 +545,7 @@ int main(int argc, char** argv) {
 
             // R key: reset all dynamic objects to spawn position, release all grips
             if(input.keyPressed(GLFW_KEY_R)) {
-                mouseDragObj = -1;   // invalidate drag (resetObjects clears mouseDrag flag)
+                mouseDragObj = -1;
                 physics.resetObjects();
                 handPanel.thumbGrip[0]  = 0.f;
                 handPanel.fingerGrip[0] = 0.f;
@@ -781,6 +781,17 @@ int main(int argc, char** argv) {
 
         if(jointPanel.draw(*model)) model->update();
         handPanel.draw();
+
+        // Handle "Reset Objects" button (set inside draw(), outside wantCapture block)
+        if(handPanel.resetObjects) {
+            handPanel.resetObjects  = false;
+            mouseDragObj = -1;
+            physics.resetObjects();
+            handPanel.thumbGrip[0]  = 0.f;
+            handPanel.fingerGrip[0] = 0.f;
+            handPanel.thumbGrip[1]  = 0.f;
+            handPanel.fingerGrip[1] = 0.f;
+        }
 
         // Key bindings / status overlay (top-right)
         {
