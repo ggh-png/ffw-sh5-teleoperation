@@ -23,14 +23,6 @@ void RobotCollider::build(btMultiBodyDynamicsWorld* world,
         if(!node) continue;
         if(node->meshIndex < 0 || node->meshIndex >= (int)meshPaths.size()) continue;
 
-        // Finger phalanges (finger_l/r_link1-16) are owned by HandPhysics as
-        // dynamic Featherstone btMultiBodyLinkCollider bodies.  Registering them
-        // here as kinematic btRigidBody too would create two bodies at the same
-        // position, causing explosive constraint forces.
-        {
-            const auto& nm = node->name;
-            if(nm.rfind("finger_l_link", 0) == 0 || nm.rfind("finger_r_link", 0) == 0) continue;
-        }
 
         STLMesh stl = STLLoader::load(meshPaths[node->meshIndex]);
         if(stl.empty()) continue;
