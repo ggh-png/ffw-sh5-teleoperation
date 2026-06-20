@@ -14,6 +14,7 @@
 #include "robot/InverseKinematics.hpp"
 #include "robot/ForwardKinematics.hpp"
 #include "physics/RobotCollider.hpp"
+#include "physics/HandPhysics.hpp"
 #include "io/SceneLoader.hpp"
 
 #include <cstdio>
@@ -185,6 +186,8 @@ int main(int argc, char** argv) {
     RobotCollider robotCollider;
     robotCollider.build(physics.bulletWorld(), model->allNodes(), model->meshPaths);
 
+    HandPhysics handPhysics;
+
 
     // Force wheel drive joints unlimited (continuous)
     for(const char* name : {"left_wheel_drive_joint",
@@ -203,6 +206,9 @@ int main(int argc, char** argv) {
     if(!eeR) eeR = ForwardKinematics::findByName(*model->root, "arm_r_link7");
     SceneNode* handL = eeL;
     SceneNode* handR = eeR;
+
+    // Finger Featherstone: finger_l/r_link1-16, PD-servo, friction holds the can.
+    handPhysics.build(physics.bulletWorld(), handL, handR, model->meshPaths);
 
     // Arm chain boundaries:
     //   shoulder = first arm joint (arm_l/r_link1) — workspace sphere center
@@ -722,9 +728,21 @@ int main(int argc, char** argv) {
             }
         }
 
-        // ── Sync arm collision bodies, then step physics ─────────────────────
+        // ── Sync arm collision bodies, update Featherstone palm bases, step physics ──
         robotCollider.update();
+        if(handPhysics.isBuilt()) {
+            handPhysics.setPalmTransforms(
+                handL ? handL->worldTransform : Mat4{},
+                handR ? handR->worldTransform : Mat4{});
+        }
         physics.step(dt);
+
+        // Sync Featherstone joint positions back to SceneNodes so renderer
+        // shows fingers at their physically-simulated positions.
+        if(handPhysics.isBuilt()) {
+            handPhysics.syncToFK();
+            model->update();
+        }
 
         // ── Sync renderer ─────────────────────────────────────────────────
         renderer.isGrounded    = physics.isGrounded();
@@ -893,6 +911,8 @@ int main(int argc, char** argv) {
     }
 
     // ── Cleanup ───────────────────────────────────────────────────────────
+    if(handPhysics.isBuilt())
+        handPhysics.clear(physics.bulletWorld());
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

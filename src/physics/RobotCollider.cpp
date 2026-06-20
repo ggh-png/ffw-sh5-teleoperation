@@ -23,11 +23,14 @@ void RobotCollider::build(btMultiBodyDynamicsWorld* world,
         if(!node) continue;
         if(node->meshIndex < 0 || node->meshIndex >= (int)meshPaths.size()) continue;
 
-        // Exclude individual finger and thumb phalanges — their physical interactions
-        // are handled by the dedicated fingertip hand spheres (ColGroup::HAND).
-        // Keep hx5_l_base and hx5_r_base (palm base meshes): they have proper STL
-        // geometry and need convex hulls so the palm cannot pass through the table
-        // or other robot links via the Jacobian-transpose collision resolution.
+        // Finger phalanges (finger_l/r_link1-16) are owned by HandPhysics as
+        // dynamic Featherstone btMultiBodyLinkCollider bodies.  Registering them
+        // here as kinematic btRigidBody too would create two bodies at the same
+        // position, causing explosive constraint forces.
+        {
+            const auto& nm = node->name;
+            if(nm.rfind("finger_l_link", 0) == 0 || nm.rfind("finger_r_link", 0) == 0) continue;
+        }
 
         STLMesh stl = STLLoader::load(meshPaths[node->meshIndex]);
         if(stl.empty()) continue;

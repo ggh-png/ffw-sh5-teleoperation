@@ -6,29 +6,23 @@
 #include <btBulletDynamicsCommon.h>
 #include <BulletDynamics/Featherstone/btMultiBodyDynamicsWorld.h>
 #include <BulletDynamics/Featherstone/btMultiBodyConstraintSolver.h>
-#include <BulletDynamics/ConstraintSolver/btFixedConstraint.h>
 #include <memory>
 #include <vector>
 
 // ── GraspObj ──────────────────────────────────────────────────────────────────
-// A dynamic rigid body (cola can) that can be grasped by either hand.
+// A dynamic rigid body (cola can).
 //
-// Grasping strategy: btFixedConstraint connects the kinematic palm body to
-// this (dynamic) body.  The can stays fully dynamic — it has mass, responds
-// to gravity, and collides with the table and chassis — only the constraint
-// pulls it along with the palm.  This is fundamentally different from the old
-// CF_KINEMATIC_OBJECT trick which made the can pass through everything.
+// Grasping: purely physical — HandPhysics Featherstone finger colliders close
+// on the can and friction holds it.  No btFixedConstraint, no rule-based grip.
 struct GraspObj {
-    std::unique_ptr<btCollisionShape>     shape;      // btCylinderShape or convex hull
+    std::unique_ptr<btCollisionShape>     shape;
     std::unique_ptr<btDefaultMotionState> state;
     std::unique_ptr<btRigidBody>          body;
-    std::unique_ptr<btFixedConstraint>    constraint; // non-null while held
-    btTransform initialTransform;                      // spawn pose for resetObjects()
+    btTransform initialTransform;
     Vec3  color      = {0.8f, 0.1f, 0.1f};
     float radius     = 0.033f;
     float halfHeight = 0.06f;
     float mass       = 0.35f;
-    int   graspedBy  = -1;   // -1 = free, 0 = left hand, 1 = right hand
     bool  mouseDrag  = false;
     bool  isMesh     = false;
 };
@@ -77,24 +71,13 @@ public:
     // Nearest-object surface distance from palm (for HUD proximity ring).
     float handNearestDist(int side) const;
 
-    // Core grasp interface — call every frame with current palm FK pose.
-    //   grip = 0     → release held object (with throw velocity)
-    //   grip > 0.05  → try to grasp nearest object within kGraspRadius
-    //
-    // Internally:
-    //   • Moves kinematic palm body to palmPos/palmRot.
-    //   • On first frame within range: creates btFixedConstraint(palm, can).
-    //     Can stays dynamic — collides with table, follows palm via constraint.
-    //   • On release: removes constraint, applies throw velocity.
+    // Track palm position for HUD proximity ring.  No constraint logic.
+    // Grasping is physical: HandPhysics Featherstone fingers close, friction holds.
     void applyGripForce(int side, float grip,
                         const Vec3& palmPos, const Quaternion& palmRot, float dt);
 
-    bool isGrasping(int side) const {
-        for(const auto& obj : m_objects) if(obj.graspedBy == side) return true;
-        return false;
-    }
+    bool isGrasping(int /*side*/) const { return false; }
 
-    // Release all constraints and teleport objects back to spawn positions.
     void resetObjects();
 
     // ── Mouse drag (RMB) ─────────────────────────────────────────────────────
@@ -138,13 +121,6 @@ private:
     std::unique_ptr<btBoxShape>           m_baseShape;
     std::unique_ptr<btDefaultMotionState> m_baseState;
     std::unique_ptr<btRigidBody>          m_base;
-
-    // Palm bodies: kinematic spheres used as btFixedConstraint anchors.
-    // MASK_PALM = 0 — not in the broadphase, no physical contact with anything.
-    // They simply track hx5_l/r_base FK and anchor the grasped object's constraint.
-    std::unique_ptr<btSphereShape>          m_palmShape[2];
-    std::unique_ptr<btDefaultMotionState>   m_palmState[2];
-    std::unique_ptr<btRigidBody>            m_palmBody[2];
 
     std::vector<GraspObj>  m_objects;
     std::vector<StaticObj> m_staticBoxes;

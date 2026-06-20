@@ -32,13 +32,13 @@
 //   6. model->update()             → render fingers at physics positions
 class HandPhysics {
 public:
-    // ── Tunable PD parameters (adjust via UI sliders) ────────────────────────
-    // kp:       position gain (N·m / rad).  Higher → faster closure but risks divergence.
-    // kd:       velocity damping (N·m·s / rad).  kd_max = 2*I/dt ≈ 1.0 at 500 Hz.
-    // forceMax: per-joint torque clamp (N·m).    Lower → safer at contact.
-    float kp       = 3.0f;
-    float kd       = 0.5f;
-    float forceMax = 1.0f;
+    // ── Tunable PD parameters ────────────────────────────────────────────────
+    // kp=20: ωn=141 rad/s at I_min=1e-3, dt_sub=0.002 → dt·ωn=0.28 < 2 → stable
+    // kd=0.3: ζ≈1.1 (slightly overdamped), settles quickly without oscillation
+    // forceMax=5: ~17× the torque needed to hold a 350 g can through one joint
+    float kp       = 20.0f;
+    float kd       =  0.3f;
+    float forceMax =  5.0f;
 
     void build(btMultiBodyDynamicsWorld* world,
                SceneNode* palmL, SceneNode* palmR,

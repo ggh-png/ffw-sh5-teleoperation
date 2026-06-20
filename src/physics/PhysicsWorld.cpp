@@ -69,40 +69,15 @@ PhysicsWorld::PhysicsWorld(const PhysicsOptions& opts) {
         m_world->addRigidBody(m_base.get(), ColGroup::ROBOT_BASE, ColGroup::MASK_ROBOT_BASE);
     }
 
-    // ── Palm bodies: btFixedConstraint anchors (one per hand side) ────────────
-    // MASK_PALM = 0: these bodies are NOT in the broadphase and never generate
-    // contact forces. They exist only so btFixedConstraint has a kinematic body
-    // to anchor against when the user grasps an object.
-    // Radius 4 cm — approximately matches the hx5 palm width.
-    for(int i = 0; i < 2; ++i) {
-        m_palmShape[i] = std::make_unique<btSphereShape>(0.04f);
-        m_palmState[i] = std::make_unique<btDefaultMotionState>(
-            btTransform(btQuaternion::getIdentity(),
-                        btVector3(0.f, 2.f + 0.1f * i, 0.f)));  // above ground at init
-        btRigidBody::btRigidBodyConstructionInfo pCI(
-            0.f, m_palmState[i].get(), m_palmShape[i].get());
-        pCI.m_restitution = 0.f;
-        pCI.m_friction    = 0.f;
-        m_palmBody[i] = std::make_unique<btRigidBody>(pCI);
-        m_palmBody[i]->setCollisionFlags(
-            m_palmBody[i]->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
-        m_palmBody[i]->setActivationState(DISABLE_DEACTIVATION);
-        m_world->addRigidBody(m_palmBody[i].get(), ColGroup::PALM, ColGroup::MASK_PALM);
-    }
 }
 
 // ── Destructor ────────────────────────────────────────────────────────────────
 
 PhysicsWorld::~PhysicsWorld() {
-    // Remove constraints before the bodies they reference are destroyed
-    for(auto& obj : m_objects) {
-        if(obj.constraint) m_world->removeConstraint(obj.constraint.get());
+    for(auto& obj : m_objects)
         m_world->removeRigidBody(obj.body.get());
-    }
     for(auto& sb : m_staticBoxes)
         m_world->removeRigidBody(sb.body.get());
-    for(int i = 0; i < 2; ++i)
-        m_world->removeRigidBody(m_palmBody[i].get());
     m_world->removeRigidBody(m_base.get());
     m_world->removeRigidBody(m_ground.get());
 }
@@ -211,7 +186,6 @@ float PhysicsWorld::handNearestDist(int side) const {
     float minDist = 1e9f;
     const Vec3& hp = m_palmPos[side];
     for(const auto& obj : m_objects) {
-        if(obj.graspedBy >= 0) continue;
         btTransform t;
         obj.body->getMotionState()->getWorldTransform(t);
         auto& o = t.getOrigin();
@@ -285,118 +259,15 @@ int PhysicsWorld::addMeshObject(const std::string& stlPath, float scale, float m
     return (int)m_objects.size() - 1;
 }
 
-// ── Grasping ──────────────────────────────────────────────────────────────────
-//
-// Design: btFixedConstraint between kinematic palm body and dynamic can body.
-//
-//   • Palm body (MASK_PALM=0) tracks hx5 FK exactly each frame.
-//   • Constraint drives the can body to follow the palm.
-//   • Can body stays DYNAMIC — mass, gravity, and collision with table/chassis
-//     are all preserved.  Only the constraint provides the "hold".
-//
-// Compare with old kinematic-attachment approach:
-//   Old: can → CF_KINEMATIC_OBJECT → bypasses collision → falls through table.
-//   New: can stays dynamic → constrained → collides with environment while held.
-
 void PhysicsWorld::applyGripForce(int side, float grip,
-                                   const Vec3& palmPos, const Quaternion& palmRot,
-                                   float dt) {
+                                   const Vec3& palmPos, const Quaternion& /*palmRot*/,
+                                   float /*dt*/) {
     m_palmPosPrev[side] = m_palmPos[side];
     m_palmPos[side]     = palmPos;
-
-    // Advance palm kinematic body to current FK pose
-    btQuaternion bRot(palmRot.x, palmRot.y, palmRot.z, palmRot.w);
-    btTransform  palmT(bRot, btVector3(palmPos.x, palmPos.y, palmPos.z));
-    m_palmState[side]->setWorldTransform(palmT);
-    m_palmBody[side]->setWorldTransform(palmT);
-
-    for(auto& obj : m_objects) {
-        if(obj.mouseDrag) continue;
-        if(obj.graspedBy >= 0 && obj.graspedBy != side) continue;
-
-        // ── RELEASE ──────────────────────────────────────────────────────────
-        if(grip < 0.05f) {
-            if(obj.graspedBy == side) {
-                if(obj.constraint) {
-                    m_world->removeConstraint(obj.constraint.get());
-                    obj.constraint.reset();
-                }
-                obj.graspedBy = -1;
-                // Restore full collision mask — arm links can push the can again
-                refilterObj(m_world.get(), obj.body.get(), ColGroup::MASK_OBJ_FREE);
-                obj.body->forceActivationState(ACTIVE_TAG);
-                obj.body->clearForces();
-
-                // Throw velocity: palm displacement / dt, capped at 5 m/s
-                if(dt > 1e-5f) {
-                    Vec3 dp = {
-                        m_palmPos[side].x - m_palmPosPrev[side].x,
-                        m_palmPos[side].y - m_palmPosPrev[side].y,
-                        m_palmPos[side].z - m_palmPosPrev[side].z
-                    };
-                    Vec3 tv = {dp.x/dt, dp.y/dt, dp.z/dt};
-                    float spd2 = tv.x*tv.x + tv.y*tv.y + tv.z*tv.z;
-                    if(spd2 > 25.f) {
-                        float inv = 5.f / std::sqrt(spd2);
-                        tv = {tv.x*inv, tv.y*inv, tv.z*inv};
-                    }
-                    obj.body->setLinearVelocity({tv.x, tv.y, tv.z});
-                } else {
-                    obj.body->setLinearVelocity({0,0,0});
-                }
-                obj.body->setAngularVelocity({0,0,0});
-            }
-            continue;
-        }
-
-        if(obj.graspedBy == side) continue;  // already held, constraint is running
-
-        // ── PHYSICAL CONTACT CHECK ────────────────────────────────────────────
-        // Rule-based proximity triggers (distance < threshold) fire even when the
-        // hand is nowhere near the can.  Instead, require Bullet to have generated
-        // an ACTUAL contact manifold between this object and a ROBOT_LINK body
-        // (finger / palm convex hull).  The grip command is only honoured when the
-        // hand is physically touching the can — pure physics, no distance heuristic.
-        //
-        // Manifolds here are from the PREVIOUS physics.step(), which is fine: the
-        // contact persists across frames as long as bodies remain in contact.
-        bool contactFound = false;
-        {
-            int nm = m_world->getDispatcher()->getNumManifolds();
-            for(int mi = 0; mi < nm && !contactFound; ++mi) {
-                btPersistentManifold* mf =
-                    m_world->getDispatcher()->getManifoldByIndexInternal(mi);
-                if(mf->getNumContacts() == 0) continue;
-                const btCollisionObject* bA = mf->getBody0();
-                const btCollisionObject* bB = mf->getBody1();
-                if(bA != obj.body.get() && bB != obj.body.get()) continue;
-                const btCollisionObject* other = (bA == obj.body.get()) ? bB : bA;
-                auto* bph = other->getBroadphaseHandle();
-                if(bph && (bph->m_collisionFilterGroup & ColGroup::ROBOT_LINK))
-                    contactFound = true;
-            }
-        }
-        if(!contactFound) continue;  // hand not physically touching can — don't grip
-
-        // ── ATTACH (btFixedConstraint) ────────────────────────────────────────
-        // Physical contact confirmed. Lock the can to the palm body so it can be
-        // lifted reliably.  The can stays DYNAMIC — gravity and table collision are
-        // preserved; only the constraint provides the holding force.
-        obj.graspedBy = side;
-
-        // Switch to HELD mask: disable ROBOT_LINK collision while the constraint
-        // is active to prevent kinematic arm hulls from fighting the constraint.
-        refilterObj(m_world.get(), obj.body.get(), ColGroup::MASK_OBJ_HELD);
-
-        btTransform objT;
-        obj.body->getMotionState()->getWorldTransform(objT);
-        btTransform frameInPalm = palmT.inverse() * objT;
-        obj.constraint = std::make_unique<btFixedConstraint>(
-            *m_palmBody[side], *obj.body,
-            frameInPalm, btTransform::getIdentity());
-        obj.constraint->setBreakingImpulseThreshold(BT_LARGE_FLOAT);
-        m_world->addConstraint(obj.constraint.get(), /*disableCollision=*/true);
-    }
+    // Grasping is purely physical: HandPhysics Featherstone finger dynamics close
+    // on the can and friction holds it.  Nothing to do here except store palm pos
+    // for the HUD proximity ring (handNearestDist).
+    (void)grip;
 }
 
 // ── Mouse drag ────────────────────────────────────────────────────────────────
@@ -404,7 +275,7 @@ void PhysicsWorld::applyGripForce(int side, float grip,
 void PhysicsWorld::beginMouseDrag(int idx) {
     if(idx < 0 || idx >= (int)m_objects.size()) return;
     auto& obj = m_objects[idx];
-    if(obj.graspedBy >= 0) return;
+    if(obj.mouseDrag) return;
     obj.mouseDrag = true;
     // Can becomes kinematic during drag — arm contact irrelevant, skip broadphase work
     refilterObj(m_world.get(), obj.body.get(), ColGroup::MASK_OBJ_HELD);
@@ -494,11 +365,6 @@ void PhysicsWorld::spawnObjects(const std::vector<ObjectDesc>& descs) {
 
 void PhysicsWorld::resetObjects() {
     for(auto& obj : m_objects) {
-        if(obj.constraint) {
-            m_world->removeConstraint(obj.constraint.get());
-            obj.constraint.reset();
-        }
-        obj.graspedBy = -1;
         obj.mouseDrag = false;
         obj.body->setCollisionFlags(
             obj.body->getCollisionFlags() & ~btCollisionObject::CF_KINEMATIC_OBJECT);

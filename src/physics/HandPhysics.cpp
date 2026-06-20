@@ -308,9 +308,9 @@ void HandPhysics::syncToFK() {
 // ── clear ─────────────────────────────────────────────────────────────────────
 
 void HandPhysics::clear(btMultiBodyDynamicsWorld* world) {
-    // Unregister tick callback first so it can't fire with freed data.
     s_preTickInstance = nullptr;
     world->setInternalTickCallback(nullptr, nullptr, /*isPreTick=*/true);
+    world->getBroadphase()->getOverlappingPairCache()->setOverlapFilterCallback(nullptr);
 
     for(auto& H : m_hands) {
         for(auto& lim : H.limits)
