@@ -207,7 +207,19 @@ int main(int argc, char** argv) {
     SceneNode* handL = eeL;
     SceneNode* handR = eeR;
 
-    // Finger Featherstone: finger_l/r_link1-16, PD-servo, friction holds the can.
+    // Featherstone topology is computed from node->worldTransform at build time.
+    // worldTransform includes joint.value, so we must set all finger joints to 0
+    // first — otherwise the joint angle is encoded into the rest-configuration
+    // geometry AND re-applied by setJointPos, causing double-angle deformation.
+    {
+        for(auto* n : model->allNodes()) {
+            if(!n) continue;
+            const auto& nm = n->name;
+            if(nm.rfind("finger_l_link", 0) == 0 || nm.rfind("finger_r_link", 0) == 0)
+                n->joint.value = 0.f;
+        }
+        model->update();  // FK at zero finger angles = correct rest configuration
+    }
     handPhysics.build(physics.bulletWorld(), handL, handR, model->meshPaths);
 
     // Arm chain boundaries:

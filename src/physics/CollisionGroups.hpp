@@ -35,11 +35,13 @@ namespace ColGroup {
     static constexpr int ALL = -1;
 
     // Static masks (set at body creation)
+    // ROBOT_LINK kinematic bodies must NOT collide with HAND Featherstone bodies:
+    // kinematic bodies apply infinite constraint force → would explode finger dynamics.
     static constexpr int MASK_ENV        = ALL;
     static constexpr int MASK_TABLE      = OBJ | ROBOT_BASE;
     static constexpr int MASK_ROBOT_BASE = ENV | OBJ;
-    static constexpr int MASK_ROBOT_LINK = OBJ | HAND;        // arm+palm touch can and finger links
-    static constexpr int MASK_HAND       = ENV | OBJ | HAND | ROBOT_LINK;  // fingers touch can + arm
+    static constexpr int MASK_ROBOT_LINK = OBJ;                // arm+palm touch can only
+    static constexpr int MASK_HAND       = ENV | OBJ | HAND;   // fingers: env, can, cross-finger
 
     // Dynamic masks for GraspObj — switched via refilterObj()
     static constexpr int MASK_OBJ_FREE = ENV | ROBOT_BASE | ROBOT_LINK | HAND; // normal: all robot parts
