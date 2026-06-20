@@ -14,7 +14,6 @@
 #include "robot/InverseKinematics.hpp"
 #include "robot/ForwardKinematics.hpp"
 #include "physics/RobotCollider.hpp"
-#include "physics/HandPhysics.hpp"
 #include "io/SceneLoader.hpp"
 
 #include <cstdio>
@@ -186,17 +185,6 @@ int main(int argc, char** argv) {
     RobotCollider robotCollider;
     robotCollider.build(physics.bulletWorld(), model->allNodes(), model->meshPaths);
 
-    // ── Hand physics (btMultiBody finger dynamics for real grasping) ─────────
-    HandPhysics handPhysics;
-    {
-        SceneNode* palmL = ForwardKinematics::findByName(*model->root, "hx5_l_base");
-        SceneNode* palmR = ForwardKinematics::findByName(*model->root, "hx5_r_base");
-        if(palmL || palmR) {
-            handPhysics.build(physics.bulletWorld(), palmL, palmR, model->meshPaths);
-        } else {
-            std::fprintf(stderr, "[main] WARNING: palm nodes not found — falling back to kinematic grasp\n");
-        }
-    }
 
     // Force wheel drive joints unlimited (continuous)
     for(const char* name : {"left_wheel_drive_joint",
@@ -698,17 +686,7 @@ int main(int argc, char** argv) {
             handPanel.thumbGrip[1],  handPanel.fingerGrip[1]);
         model->update();  // FK after hand joints
 
-        // ── Hand physics: update palm base ────────────────────────────────────
-        // applyGripTorques() is driven by Bullet's internal pre-tick callback
-        // (registered in HandPhysics::build) — fires once per physics substep
-        // (500 Hz), not once per frame (60 Hz), so kp=20 stays stable.
-        if(handPhysics.isBuilt()) {
-            Mat4 palmLWorld = handL ? handL->worldTransform : Mat4::identity();
-            Mat4 palmRWorld = handR ? handR->worldTransform : Mat4::identity();
-            handPhysics.setPalmTransforms(palmLWorld, palmRWorld);
-        }
-
-        // ── Grasping (kinematic fallback when HandPhysics not built) ─────────
+        // ── Grasping (btFixedConstraint — palm FK → kinematic palm body → constraint → can) ──
         {
             Vec3       palmPosL = handL ? handL->worldTransform.transformPoint({0,0,0}) : Vec3{};
             Vec3       palmPosR = handR ? handR->worldTransform.transformPoint({0,0,0}) : Vec3{};
@@ -717,19 +695,10 @@ int main(int argc, char** argv) {
             Quaternion palmRotR = handR ? handR->worldTransform.extractRotation()
                                         : Quaternion::identity();
 
-            // When HandPhysics is active, Bullet friction handles grasping.
-            // Kinematic attachment is only used as fallback.
-            if(!handPhysics.isBuilt()) {
-                physics.applyGripForce(0, handPanel.gripStrength(0), palmPosL, palmRotL, dt);
-                physics.applyGripForce(1, handPanel.gripStrength(1), palmPosR, palmRotR, dt);
-                physics.updateGraspedObjects(0, palmPosL, palmRotL);
-                physics.updateGraspedObjects(1, palmPosR, palmRotR);
-            } else {
-                // applyGripForce is not called when HandPhysics is active, but
-                // m_palmPos must still be updated so handNearestDist() gives correct
-                // distances for the HUD proximity indicator.
-                physics.updatePalmPositions(palmPosL, palmPosR);
-            }
+            // applyGripForce: moves palm kinematic body, creates/removes btFixedConstraint.
+            // Can stays dynamic — collides with table while held, released with throw velocity.
+            physics.applyGripForce(0, handPanel.gripStrength(0), palmPosL, palmRotL, dt);
+            physics.applyGripForce(1, handPanel.gripStrength(1), palmPosR, palmRotR, dt);
 
             // Auto-drop: palm inside env box → release
             for(int side = 0; side < 2; ++side) {
@@ -753,15 +722,9 @@ int main(int argc, char** argv) {
             }
         }
 
-        // ── Sync arm collision bodies, step physics, read back fingers ───────
+        // ── Sync arm collision bodies, then step physics ─────────────────────
         robotCollider.update();
         physics.step(dt);
-
-        // Copy Featherstone finger positions → SceneNode (renders fingers wrapping object)
-        if(handPhysics.isBuilt()) {
-            handPhysics.syncToFK();
-            model->update();
-        }
 
         // ── Sync renderer ─────────────────────────────────────────────────
         renderer.isGrounded    = physics.isGrounded();
@@ -818,18 +781,6 @@ int main(int argc, char** argv) {
 
         if(jointPanel.draw(*model)) model->update();
         handPanel.draw();
-
-        // ── Hand Physics tuning panel ─────────────────────────────────────────
-        if(handPhysics.isBuilt()) {
-            ImGui::SetNextWindowPos({10.f, (float)kHeight - 130.f}, ImGuiCond_Once);
-            ImGui::SetNextWindowSize({260.f, 120.f}, ImGuiCond_Once);
-            ImGui::Begin("Hand Physics");
-            ImGui::SliderFloat("kp  (N·m/rad)",   &handPhysics.kp,       0.f,  30.f, "%.2f");
-            ImGui::SliderFloat("kd  (N·m·s/rad)", &handPhysics.kd,       0.f,   1.0f, "%.3f");
-            ImGui::SliderFloat("fMax (N·m)",       &handPhysics.forceMax, 0.f,   5.f, "%.2f");
-            ImGui::TextDisabled("stable: kp<400, kd<0.9 (500 Hz)");
-            ImGui::End();
-        }
 
         // Key bindings / status overlay (top-right)
         {

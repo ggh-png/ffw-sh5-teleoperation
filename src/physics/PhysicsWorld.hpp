@@ -6,26 +6,34 @@
 #include <btBulletDynamicsCommon.h>
 #include <BulletDynamics/Featherstone/btMultiBodyDynamicsWorld.h>
 #include <BulletDynamics/Featherstone/btMultiBodyConstraintSolver.h>
+#include <BulletDynamics/ConstraintSolver/btFixedConstraint.h>
 #include <memory>
 #include <vector>
 
-// Dynamic grabbable object (cola can)
+// ── GraspObj ──────────────────────────────────────────────────────────────────
+// A dynamic rigid body (cola can) that can be grasped by either hand.
+//
+// Grasping strategy: btFixedConstraint connects the kinematic palm body to
+// this (dynamic) body.  The can stays fully dynamic — it has mass, responds
+// to gravity, and collides with the table and chassis — only the constraint
+// pulls it along with the palm.  This is fundamentally different from the old
+// CF_KINEMATIC_OBJECT trick which made the can pass through everything.
 struct GraspObj {
-    std::unique_ptr<btCollisionShape>     shape;   // btCylinderShape or convex hull
+    std::unique_ptr<btCollisionShape>     shape;      // btCylinderShape or convex hull
     std::unique_ptr<btDefaultMotionState> state;
     std::unique_ptr<btRigidBody>          body;
-    btTransform initialTransform;      // spawn pose — used by resetObjects()
-    btTransform graspRelTransform;     // can pose relative to palm at grasp time
+    std::unique_ptr<btFixedConstraint>    constraint; // non-null while held
+    btTransform initialTransform;                      // spawn pose for resetObjects()
     Vec3  color      = {0.8f, 0.1f, 0.1f};
     float radius     = 0.033f;
     float halfHeight = 0.06f;
     float mass       = 0.35f;
-    int   graspedBy  = -1;   // side holding it (-1 = free)
+    int   graspedBy  = -1;   // -1 = free, 0 = left hand, 1 = right hand
     bool  mouseDrag  = false;
-    bool  isMesh     = false; // true = STL mesh visual
+    bool  isMesh     = false;
 };
 
-// Static environment box (table, shelf, ...)
+// ── StaticObj ─────────────────────────────────────────────────────────────────
 struct StaticObj {
     std::unique_ptr<btBoxShape>           shape;
     std::unique_ptr<btDefaultMotionState> state;
@@ -36,25 +44,19 @@ struct StaticObj {
 };
 
 // ── PhysicsWorld ──────────────────────────────────────────────────────────────
-// World based on btMultiBodyDynamicsWorld (Featherstone solver) so that
-// ArticulatedRobot btMultiBody links participate in the same contact resolution
-// as the mobile base (btRigidBody) and the can (btRigidBody).
 class PhysicsWorld {
 public:
-    static constexpr float kGraspRadius = 0.10f;
+    // Grip fires when palm-centre-to-can-surface distance < kGraspRadius.
+    // 8 cm gives a comfortable "hand around can" feel without being a force-field.
+    static constexpr float kGraspRadius = 0.08f;
 
     explicit PhysicsWorld(const PhysicsOptions& opts = {});
     ~PhysicsWorld();
 
     void step(float dt);
 
-    // Expose the underlying world (btMultiBodyDynamicsWorld ⊃ btDiscreteDynamicsWorld).
-    // RobotCollider and HandPhysics both use this.
     btMultiBodyDynamicsWorld* bulletWorld() { return m_world.get(); }
 
-    // Spawn objects described by a SceneLoader result.
-    // Static boxes go into renderer.boxes; dynamic cylinders into renderer.objects.
-    // Returns the index of the first spawned cylinder (for runtime reference).
     void spawnObjects(const std::vector<ObjectDesc>& descs);
 
     // ── Mobile base ──────────────────────────────────────────────────────────
@@ -66,40 +68,42 @@ public:
     void setBaseKinematic(bool kinematic);
     bool isGrounded() const;
 
-    // ── Dynamic objects (can) ────────────────────────────────────────────────
+    // ── Dynamic objects ──────────────────────────────────────────────────────
     int addCylinder(float r, float halfH, float mass,
                     const Vec3& pos, const Vec3& color);
-
-    // STL mesh object: physics = btCylinderShape fitted from mesh bounds,
-    // visual = STL mesh rendered by Renderer::m_canMesh.
     int addMeshObject(const std::string& stlPath, float scale, float mass,
                       const Vec3& pos, const Vec3& color, float friction = 0.5f);
 
-    // Proximity check using palm position (from FK / ArticulatedRobot).
-    // Returns distance from nearest object surface, for HUD ring.
+    // Nearest-object surface distance from palm (for HUD proximity ring).
     float handNearestDist(int side) const;
 
-    // Grasping: call every frame after syncToFK().
-    //   palmPos / palmRot: world position and orientation of the palm link (hx5_l/r_base).
-    //   gripStrength: 0 = open, >0 = trying to grasp.
-    //   dt: frame delta for throw-velocity computation on release.
-    void applyGripForce(int side, float gripStrength,
+    // Core grasp interface — call every frame with current palm FK pose.
+    //   grip = 0     → release held object (with throw velocity)
+    //   grip > 0.05  → try to grasp nearest object within kGraspRadius
+    //
+    // Internally:
+    //   • Moves kinematic palm body to palmPos/palmRot.
+    //   • On first frame within range: creates btFixedConstraint(palm, can).
+    //     Can stays dynamic — collides with table, follows palm via constraint.
+    //   • On release: removes constraint, applies throw velocity.
+    void applyGripForce(int side, float grip,
                         const Vec3& palmPos, const Quaternion& palmRot, float dt);
-
-    // Move held objects rigidly with the palm each frame.
-    // palmPos / palmRot: current palm world pose (same values as applyGripForce).
-    void updateGraspedObjects(int side, const Vec3& palmPos, const Quaternion& palmRot);
 
     bool isGrasping(int side) const {
         for(const auto& obj : m_objects) if(obj.graspedBy == side) return true;
         return false;
     }
 
-    // Mouse drag (RMB)
+    // Release all constraints and teleport objects back to spawn positions.
+    void resetObjects();
+
+    // ── Mouse drag (RMB) ─────────────────────────────────────────────────────
+    int  pickObject(const Vec3& rayOrigin, const Vec3& rayDir) const;
     void beginMouseDrag(int idx);
     void setMouseDragPosition(int idx, const Vec3& pos);
     void endMouseDrag(int idx);
 
+    // ── Object / box state snapshots (for renderer) ──────────────────────────
     struct ObjState {
         Vec3 pos; Quaternion rot;
         Vec3 color; float radius; float halfHeight;
@@ -107,27 +111,16 @@ public:
     };
     std::vector<ObjState> objectStates() const;
 
-    // ── Static boxes ─────────────────────────────────────────────────────────
     int addStaticBox(const Vec3& halfExtents, const Vec3& pos, const Vec3& color);
-
     struct StaticBoxState { Vec3 pos; Vec3 halfExtents; Vec3 color; };
     std::vector<StaticBoxState> staticBoxStates() const;
 
-    btRigidBody* baseBody()         const { return m_base.get(); }
+    btRigidBody* baseBody()          const { return m_base.get(); }
     btRigidBody* staticBoxBody(int i) const {
-        return (i>=0&&i<(int)m_staticBoxes.size()) ? m_staticBoxes[i].body.get() : nullptr;
+        return (i >= 0 && i < (int)m_staticBoxes.size())
+               ? m_staticBoxes[i].body.get() : nullptr;
     }
     int staticBoxCount() const { return (int)m_staticBoxes.size(); }
-
-    int pickObject(const Vec3& rayOrigin, const Vec3& rayDir) const;
-
-    // Reset all dynamic objects to their spawn transforms, release all grasps.
-    // Call when user presses R (or any "reset scene" action).
-    void resetObjects();
-
-    // Update palm positions used by handNearestDist() without triggering grip logic.
-    // Must be called every frame when HandPhysics is active (applyGripForce is not called then).
-    void updatePalmPositions(const Vec3& palmL, const Vec3& palmR);
 
 private:
     std::unique_ptr<btDefaultCollisionConfiguration> m_colConfig;
@@ -136,23 +129,31 @@ private:
     std::unique_ptr<btMultiBodyConstraintSolver>     m_solver;
     std::unique_ptr<btMultiBodyDynamicsWorld>        m_world;
 
+    // Ground plane
     std::unique_ptr<btStaticPlaneShape>   m_groundShape;
-    std::unique_ptr<btBoxShape>           m_baseShape;
-    std::unique_ptr<btRigidBody>          m_ground;
-    std::unique_ptr<btRigidBody>          m_base;
     std::unique_ptr<btDefaultMotionState> m_groundState;
+    std::unique_ptr<btRigidBody>          m_ground;
+
+    // Robot chassis (kinematic box, ROBOT_BASE group)
+    std::unique_ptr<btBoxShape>           m_baseShape;
     std::unique_ptr<btDefaultMotionState> m_baseState;
+    std::unique_ptr<btRigidBody>          m_base;
+
+    // Palm bodies: kinematic spheres used as btFixedConstraint anchors.
+    // MASK_PALM = 0 — not in the broadphase, no physical contact with anything.
+    // They simply track hx5_l/r_base FK and anchor the grasped object's constraint.
+    std::unique_ptr<btSphereShape>          m_palmShape[2];
+    std::unique_ptr<btDefaultMotionState>   m_palmState[2];
+    std::unique_ptr<btRigidBody>            m_palmBody[2];
 
     std::vector<GraspObj>  m_objects;
     std::vector<StaticObj> m_staticBoxes;
 
-    // Palm positions tracked per side for throw-velocity on release
-    Vec3 m_palmPos[2]     = {};
-    Vec3 m_palmPosPrev[2] = {};
-
-    float m_baseYaw  = 0.f;
-    float m_timestep = 1.f / 240.f;
-    float m_impratio = 1.f;
+    Vec3  m_palmPos[2]     = {};
+    Vec3  m_palmPosPrev[2] = {};
+    float m_baseYaw        = 0.f;
+    float m_timestep       = 1.f / 240.f;
+    float m_impratio       = 1.f;
 
     static btRigidBody* makeRigidBody(btCollisionShape*, btMotionState*, float mass);
 };
