@@ -351,37 +351,45 @@ void PhysicsWorld::applyGripForce(int side, float grip,
 
         if(obj.graspedBy == side) continue;  // already held, constraint is running
 
-        // ── PROXIMITY CHECK ───────────────────────────────────────────────────
-        // Exact cylinder surface distance from palm centre
-        btTransform objT;
-        obj.body->getMotionState()->getWorldTransform(objT);
-        btVector3 lp = objT.inverse() * btVector3(palmPos.x, palmPos.y, palmPos.z);
-        float lat = std::sqrt(lp.x()*lp.x() + lp.z()*lp.z());
-        float ay  = std::fabs(lp.y());
-        float surfDist;
-        if(lat <= obj.radius && ay <= obj.halfHeight)
-            surfDist = -std::min(obj.radius - lat, obj.halfHeight - ay);
-        else if(ay > obj.halfHeight && lat <= obj.radius)
-            surfDist = ay - obj.halfHeight;
-        else if(lat > obj.radius && ay <= obj.halfHeight)
-            surfDist = lat - obj.radius;
-        else {
-            float ex = lat - obj.radius, ey = ay - obj.halfHeight;
-            surfDist = std::sqrt(ex*ex + ey*ey);
+        // ── PHYSICAL CONTACT CHECK ────────────────────────────────────────────
+        // Rule-based proximity triggers (distance < threshold) fire even when the
+        // hand is nowhere near the can.  Instead, require Bullet to have generated
+        // an ACTUAL contact manifold between this object and a ROBOT_LINK body
+        // (finger / palm convex hull).  The grip command is only honoured when the
+        // hand is physically touching the can — pure physics, no distance heuristic.
+        //
+        // Manifolds here are from the PREVIOUS physics.step(), which is fine: the
+        // contact persists across frames as long as bodies remain in contact.
+        bool contactFound = false;
+        {
+            int nm = m_world->getDispatcher()->getNumManifolds();
+            for(int mi = 0; mi < nm && !contactFound; ++mi) {
+                btPersistentManifold* mf =
+                    m_world->getDispatcher()->getManifoldByIndexInternal(mi);
+                if(mf->getNumContacts() == 0) continue;
+                const btCollisionObject* bA = mf->getBody0();
+                const btCollisionObject* bB = mf->getBody1();
+                if(bA != obj.body.get() && bB != obj.body.get()) continue;
+                const btCollisionObject* other = (bA == obj.body.get()) ? bB : bA;
+                auto* bph = other->getBroadphaseHandle();
+                if(bph && (bph->m_collisionFilterGroup & ColGroup::ROBOT_LINK))
+                    contactFound = true;
+            }
         }
-        if(surfDist > kGraspRadius) continue;
+        if(!contactFound) continue;  // hand not physically touching can — don't grip
 
         // ── ATTACH (btFixedConstraint) ────────────────────────────────────────
-        // frameInPalm = pose of the can centre in the palm's local frame.
-        // The constraint maintains:  palm_world * frameInPalm == can_world.
+        // Physical contact confirmed. Lock the can to the palm body so it can be
+        // lifted reliably.  The can stays DYNAMIC — gravity and table collision are
+        // preserved; only the constraint provides the holding force.
         obj.graspedBy = side;
 
-        // Disable arm-link collision while the constraint is active.
-        // Kinematic arm hulls would otherwise fight the constraint — they push
-        // the can away while the constraint pulls it back, causing oscillation.
-        // Arm ↔ can collision is re-enabled when the grip is released.
+        // Switch to HELD mask: disable ROBOT_LINK collision while the constraint
+        // is active to prevent kinematic arm hulls from fighting the constraint.
         refilterObj(m_world.get(), obj.body.get(), ColGroup::MASK_OBJ_HELD);
 
+        btTransform objT;
+        obj.body->getMotionState()->getWorldTransform(objT);
         btTransform frameInPalm = palmT.inverse() * objT;
         obj.constraint = std::make_unique<btFixedConstraint>(
             *m_palmBody[side], *obj.body,
