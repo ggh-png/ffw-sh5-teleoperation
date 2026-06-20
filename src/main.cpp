@@ -626,16 +626,24 @@ int main(int argc, char** argv) {
             Quaternion baseRot = physics.baseOrientation();
             Vec3       vbase   = visualBasePos();
 
-            // When the user actively drags an RPY slider, snap the XYZ target
-            // to the current EE position so the arm holds still while only
-            // orientation is adjusted.
+            // When the user drags an RPY slider, keep the PALM CENTER fixed in
+            // world space — not the hx5_*_base origin.
+            // palmLocal: offset from hx5_*_base to palm center (hand-local frame).
+            // Required EE pos = palmCenterWorld - newWorldRot.rotate(palmLocal)
+            static const Vec3 kPalmLocalL{ -0.0015f, -0.009f, 0.06f };
+            static const Vec3 kPalmLocalR{ -0.0015f,  0.009f, 0.06f };
+
             if(jointPanel.ikRotChangedL && eeL) {
-                Vec3 eeW = eeL->worldTransform.transformPoint({0,0,0});
-                jointPanel.ikTargetL = baseRot.conjugate().rotate(eeW - vbase);
+                Vec3 palmW = eeL->worldTransform.transformPoint(kPalmLocalL);
+                Quaternion nwr = (baseRot * jointPanel.ikDesiredRotL).normalized();
+                Vec3 newEeW = palmW - nwr.rotate(kPalmLocalL);
+                jointPanel.ikTargetL = baseRot.conjugate().rotate(newEeW - vbase);
             }
             if(jointPanel.ikRotChangedR && eeR) {
-                Vec3 eeW = eeR->worldTransform.transformPoint({0,0,0});
-                jointPanel.ikTargetR = baseRot.conjugate().rotate(eeW - vbase);
+                Vec3 palmW = eeR->worldTransform.transformPoint(kPalmLocalR);
+                Quaternion nwr = (baseRot * jointPanel.ikDesiredRotR).normalized();
+                Vec3 newEeW = palmW - nwr.rotate(kPalmLocalR);
+                jointPanel.ikTargetR = baseRot.conjugate().rotate(newEeW - vbase);
             }
 
             Vec3 ikWorldL = baseRot.rotate(jointPanel.ikTargetL) + vbase;
