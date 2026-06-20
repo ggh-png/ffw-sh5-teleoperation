@@ -611,6 +611,13 @@ int main(int argc, char** argv) {
                 jointPanel.ikTargetRotR = (baseRot.conjugate()
                     * eeR->worldTransform.extractRotation()).normalized();
         }
+        // Apply desired rotation from RPY sliders to the IK target.
+        if(jointPanel.ikMode && jointPanel.ikUseOrientation) {
+            if(jointPanel.ikOrientControlL)
+                jointPanel.ikTargetRotL = jointPanel.ikDesiredRotL;
+            if(jointPanel.ikOrientControlR)
+                jointPanel.ikTargetRotR = jointPanel.ikDesiredRotR;
+        }
         lastIkMode = jointPanel.ikMode;
 
         // ── IK ────────────────────────────────────────────────────────────
