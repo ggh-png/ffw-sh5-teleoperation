@@ -27,14 +27,6 @@ static constexpr int  kWidth  = 1280;
 static constexpr int  kHeight = 720;
 static constexpr char kTitle[]= "FFW-SH5 Teleoperation";
 
-// Table geometry constants (shared between physics and rendering)
-// Center at Y=0.325, half-ext Y=0.325 → bottom=0 (floor), top=0.65m
-static const Vec3  kTablePos     = {0.f, 0.325f, -0.65f};  // closer so arm can reach
-static const Vec3  kTableHalfExt = {0.30f, 0.325f, 0.25f};
-static const float kTableTopY    = kTablePos.y + kTableHalfExt.y;  // 0.65 m
-static const float kCanHalfH     = 0.06f;
-static const float kCanRadius    = 0.033f;
-
 static Renderer* g_renderer = nullptr;
 static void framebufferSizeCB(GLFWwindow*, int w, int h) {
     if(g_renderer) g_renderer->resize(w, h);
@@ -124,14 +116,24 @@ int main(int argc, char** argv) {
     renderer.init(kWidth, kHeight);
     input.init(window);
 
-    // ── Scene loading (replaces hardcoded table + can) ───────────────────
-    // Derive scene.xml path from mjcfPath (same directory, different filename)
+    // ── Scene loading (table, cans, …) ──────────────────────────────────
+    // scene.xml lives in the assets root — one level above the robot MJCF
+    // sub-directory — so it can be tracked in the main repo rather than
+    // inside the robotis_mujoco_menagerie submodule.
+    //
+    // Path derivation: strip filename, go up 2 parent directories, append scene.xml.
+    //   assets/ffw_sh5/robotis_ffw/ffw_sh5.xml  →  assets/scene.xml
     {
-        std::string sceneDir = mjcfPath;
-        auto slash = sceneDir.find_last_of("/\\");
-        if(slash != std::string::npos) sceneDir.resize(slash + 1);
-        else sceneDir = "./";
-        std::string scenePath = sceneDir + "scene.xml";
+        std::string p = mjcfPath;
+        // Remove filename → dir
+        auto sl = p.find_last_of("/\\");
+        if(sl != std::string::npos) p.resize(sl); else p = ".";
+        // Up two more levels (robotis_ffw → ffw_sh5 → assets)
+        for(int i = 0; i < 2; ++i) {
+            sl = p.find_last_of("/\\");
+            p  = (sl != std::string::npos) ? p.substr(0, sl) : ".";
+        }
+        std::string scenePath = p + "/scene.xml";
 
         auto descs = SceneLoader::load(scenePath);
         physics.spawnObjects(descs);
@@ -153,6 +155,32 @@ int main(int argc, char** argv) {
     renderer.boxes.push_back({{0,-.01f,0}, Quaternion::identity(),
                                {0.60f,0.60f,0.60f}, {6,.01f,6}});
 
+    // ── Mouse drag geometry: derived from spawned scene objects ───────────────
+    // Replaces the former hardcoded kTablePos/kTableHalfExt/kCanHalfH/kCanRadius.
+    // dragClampPos/Ext: the highest-top static box (table) — XZ drag clamp boundary.
+    // dragPlaneY: Y-plane the dragged object slides on (table top + object halfH).
+    float dragPlaneY       = 0.5f;
+    float dragObjHalfH     = 0.06f;
+    float dragObjRadius    = 0.033f;
+    Vec3  dragClampPos     = {};
+    Vec3  dragClampHalfExt = {10.f, 0.f, 10.f};
+    {
+        float bestTop = -1e9f;
+        for(const auto& sb : physics.staticBoxStates()) {
+            float ty = sb.pos.y + sb.halfExtents.y;
+            if(ty > bestTop) {
+                bestTop          = ty;
+                dragClampPos     = sb.pos;
+                dragClampHalfExt = sb.halfExtents;
+            }
+        }
+        auto initObjs = physics.objectStates();
+        if(!initObjs.empty()) {
+            dragObjHalfH  = initObjs[0].halfHeight;
+            dragObjRadius = initObjs[0].radius;
+            dragPlaneY    = bestTop + dragObjHalfH;
+        }
+    }
 
     // ── Robot collision (kinematic ConvexHull per link, FK-driven) ──────────────
     RobotCollider robotCollider;
@@ -299,25 +327,30 @@ int main(int argc, char** argv) {
                 Vec3 ro = renderer.camera.eye();
                 Vec3 rd = renderer.camera.pickRay(ndcX, ndcY, aspect);
                 mouseDragObj = physics.pickObject(ro, rd);
-                if(mouseDragObj >= 0)
+                if(mouseDragObj >= 0) {
                     physics.beginMouseDrag(mouseDragObj);
+                    // Snap drag plane to this object's actual dimensions
+                    auto states = physics.objectStates();
+                    if(mouseDragObj < (int)states.size()) {
+                        float tableTopY = dragClampPos.y + dragClampHalfExt.y;
+                        dragObjHalfH    = states[mouseDragObj].halfHeight;
+                        dragObjRadius   = states[mouseDragObj].radius;
+                        dragPlaneY      = tableTopY + dragObjHalfH;
+                    }
+                }
             }
 
             if(rightDown && mouseDragObj >= 0) {
-                // Project mouse ray onto y = tableTopY + canHalfH plane
                 Vec3 ro = renderer.camera.eye();
                 Vec3 rd = renderer.camera.pickRay(ndcX, ndcY, aspect);
-                float targetY = kTableTopY + kCanHalfH;
                 if(std::abs(rd.y) > 1e-4f) {
-                    float t = (targetY - ro.y) / rd.y;
+                    float t = (dragPlaneY - ro.y) / rd.y;
                     if(t > 0.f) {
-                        Vec3 pos = {ro.x + rd.x*t, targetY, ro.z + rd.z*t};
-                        // Clamp to table surface
-                        float cx = kTablePos.x, cz = kTablePos.z;
-                        float hx = kTableHalfExt.x - kCanRadius;
-                        float hz = kTableHalfExt.z - kCanRadius;
-                        pos.x = std::max(cx-hx, std::min(cx+hx, pos.x));
-                        pos.z = std::max(cz-hz, std::min(cz+hz, pos.z));
+                        Vec3 pos = {ro.x + rd.x*t, dragPlaneY, ro.z + rd.z*t};
+                        float hx = dragClampHalfExt.x - dragObjRadius;
+                        float hz = dragClampHalfExt.z - dragObjRadius;
+                        pos.x = std::max(dragClampPos.x-hx, std::min(dragClampPos.x+hx, pos.x));
+                        pos.z = std::max(dragClampPos.z-hz, std::min(dragClampPos.z+hz, pos.z));
                         physics.setMouseDragPosition(mouseDragObj, pos);
                     }
                 }
@@ -522,6 +555,16 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // R key: reset all dynamic objects to spawn position, release all grips
+            if(input.keyPressed(GLFW_KEY_R)) {
+                mouseDragObj = -1;   // invalidate drag (resetObjects clears mouseDrag flag)
+                physics.resetObjects();
+                handPanel.thumbGrip[0]  = 0.f;
+                handPanel.fingerGrip[0] = 0.f;
+                handPanel.thumbGrip[1]  = 0.f;
+                handPanel.fingerGrip[1] = 0.f;
+            }
+
             if(input.keyPressed(GLFW_KEY_G))
                 jointPanel.showGizmos = !jointPanel.showGizmos;
 
@@ -681,6 +724,11 @@ int main(int argc, char** argv) {
                 physics.applyGripForce(1, handPanel.gripStrength(1), palmPosR, palmRotR, dt);
                 physics.updateGraspedObjects(0, palmPosL, palmRotL);
                 physics.updateGraspedObjects(1, palmPosR, palmRotR);
+            } else {
+                // applyGripForce is not called when HandPhysics is active, but
+                // m_palmPos must still be updated so handNearestDist() gives correct
+                // distances for the HUD proximity indicator.
+                physics.updatePalmPositions(palmPosL, palmPosR);
             }
 
             // Auto-drop: palm inside env box → release
@@ -800,6 +848,7 @@ int main(int argc, char** argv) {
             ImGui::Text("Tab      next joint");
             ImGui::Text("Z / X    close L / R hand (hold)");
             ImGui::Text("G        gizmos  F  cam follow");
+            ImGui::Text("R        reset objects");
             ImGui::Text("RMB      drag can");
             if(jointPanel.ikMode) {
                 ImGui::Separator();

@@ -14,6 +14,7 @@ struct GraspObj {
     std::unique_ptr<btCollisionShape>     shape;   // btCylinderShape or convex hull
     std::unique_ptr<btDefaultMotionState> state;
     std::unique_ptr<btRigidBody>          body;
+    btTransform initialTransform;      // spawn pose — used by resetObjects()
     btTransform graspRelTransform;     // can pose relative to palm at grasp time
     Vec3  color      = {0.8f, 0.1f, 0.1f};
     float radius     = 0.033f;
@@ -119,6 +120,14 @@ public:
     int staticBoxCount() const { return (int)m_staticBoxes.size(); }
 
     int pickObject(const Vec3& rayOrigin, const Vec3& rayDir) const;
+
+    // Reset all dynamic objects to their spawn transforms, release all grasps.
+    // Call when user presses R (or any "reset scene" action).
+    void resetObjects();
+
+    // Update palm positions used by handNearestDist() without triggering grip logic.
+    // Must be called every frame when HandPhysics is active (applyGripForce is not called then).
+    void updatePalmPositions(const Vec3& palmL, const Vec3& palmR);
 
 private:
     std::unique_ptr<btDefaultCollisionConfiguration> m_colConfig;

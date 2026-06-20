@@ -192,8 +192,9 @@ int PhysicsWorld::addCylinder(float r, float halfH, float mass,
     auto& obj = m_objects.emplace_back();
     obj.radius=r; obj.halfHeight=halfH; obj.mass=mass; obj.color=color;
     obj.shape = std::make_unique<btCylinderShape>(btVector3(r,halfH,r));
-    obj.state = std::make_unique<btDefaultMotionState>(
-        btTransform(btQuaternion::getIdentity(), btVector3(pos.x,pos.y,pos.z)));
+    btTransform spawnT(btQuaternion::getIdentity(), btVector3(pos.x,pos.y,pos.z));
+    obj.initialTransform = spawnT;
+    obj.state = std::make_unique<btDefaultMotionState>(spawnT);
     btVector3 inertia(0,0,0);
     obj.shape->calculateLocalInertia(mass, inertia);
     btRigidBody::btRigidBodyConstructionInfo ci(mass, obj.state.get(),
@@ -322,8 +323,9 @@ int PhysicsWorld::addMeshObject(const std::string& stlPath, float scale, float m
     obj.shape->setMargin(0.005f);
     obj.color = color; obj.mass = mass; obj.isMesh = true;
     obj.radius = r; obj.halfHeight = halfH;
-    obj.state = std::make_unique<btDefaultMotionState>(
-        btTransform(btQuaternion::getIdentity(), btVector3(pos.x, pos.y, pos.z)));
+    btTransform spawnT(btQuaternion::getIdentity(), btVector3(pos.x, pos.y, pos.z));
+    obj.initialTransform = spawnT;
+    obj.state = std::make_unique<btDefaultMotionState>(spawnT);
     btVector3 inertia(0,0,0);
     obj.shape->calculateLocalInertia(mass, inertia);
     btRigidBody::btRigidBodyConstructionInfo ci(mass, obj.state.get(), obj.shape.get(), inertia);
@@ -425,6 +427,38 @@ void PhysicsWorld::spawnObjects(const std::vector<ObjectDesc>& descs) {
             addMeshObject(d.meshFile, d.meshScale, d.mass, d.pos, d.color, d.friction);
         }
     }
+}
+
+// ── Reset objects ─────────────────────────────────────────────────────────────
+
+void PhysicsWorld::resetObjects() {
+    for(auto& obj : m_objects) {
+        // Release kinematic attachment (grip or mouse drag)
+        bool wasKinematic = (obj.graspedBy >= 0) || obj.mouseDrag;
+        if(wasKinematic) {
+            obj.body->setCollisionFlags(
+                obj.body->getCollisionFlags() & ~btCollisionObject::CF_KINEMATIC_OBJECT);
+            btVector3 inertia(0,0,0);
+            obj.shape->calculateLocalInertia(obj.mass, inertia);
+            obj.body->setMassProps(obj.mass, inertia);
+        }
+        obj.graspedBy = -1;
+        obj.mouseDrag = false;
+
+        obj.state->setWorldTransform(obj.initialTransform);
+        obj.body->setWorldTransform(obj.initialTransform);
+        obj.body->clearForces();
+        obj.body->setLinearVelocity({0,0,0});
+        obj.body->setAngularVelocity({0,0,0});
+        obj.body->forceActivationState(ACTIVE_TAG);
+    }
+}
+
+// ── Palm position tracking ────────────────────────────────────────────────────
+
+void PhysicsWorld::updatePalmPositions(const Vec3& palmL, const Vec3& palmR) {
+    m_palmPosPrev[0] = m_palmPos[0];  m_palmPos[0] = palmL;
+    m_palmPosPrev[1] = m_palmPos[1];  m_palmPos[1] = palmR;
 }
 
 // ── Ray picking ───────────────────────────────────────────────────────────────
