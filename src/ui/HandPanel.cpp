@@ -74,13 +74,17 @@ void HandPanel::applyToModel(RobotModel& model,
         setJoint(model, kThumbJoints[side][1], s * 1.5708f);               // MCPyaw: ±90° fixed default
         setJoint(model, kThumbJoints[side][2], s * kThumbClose[2] * tt);  // MCP pitch
         setJoint(model, kThumbJoints[side][3], s * kThumbClose[3] * tt);  // IP
-        // 4 fingers — only PIP (joint[1]) has a 90° rest offset; rest start at 0
-        for(int f = 0; f < 4; ++f) {
+        // Fingers 0-2: index, middle, ring — driven by grip target
+        for(int f = 0; f < 3; ++f) {
             setJoint(model, kFingerJoints[side][f][0], kFingerClose[0] * ft);
             setJoint(model, kFingerJoints[side][f][1], kFingerClose[1] * ft);
             setJoint(model, kFingerJoints[side][f][2], kFingerClose[2] * ft);
             setJoint(model, kFingerJoints[side][f][3], kFingerClose[3] * ft);
         }
+        // Finger 3: pinky (joints 17-20) — kept at rest; structural constraint
+        // (HandPhysics also excludes link17-20 from physics simulation)
+        for(int j = 0; j < 4; ++j)
+            setJoint(model, kFingerJoints[side][3][j], 0.f);
     }
 }
 
