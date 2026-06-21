@@ -189,12 +189,57 @@ int main(int argc, char** argv) {
     robotCollider.build(physics.bulletWorld(), model->allNodes(), model->meshPaths);
 
     // Arm link nodes used each frame to detect table penetration in IK mode.
-    // Only the structural arm links (not fingers/palm) are checked; these are the
-    // links most likely to dip below the table when the arm curves forward/down.
     std::vector<SceneNode*> armNodes;
     for(auto* n : model->allNodes())
         if(n->name.rfind("arm_l_link", 0) == 0 || n->name.rfind("arm_r_link", 0) == 0)
             armNodes.push_back(n);
+
+    // Finger node pointer cache — looked up once, read every frame.
+    // [side][idx]: side 0=left, 1=right.
+    // thumbFlex: link3 (MCPpitch), link4 (IP) — the joints that move with thumbGrip.
+    // otherFinger: index/middle/ring MCP+PIP links most likely to contact thumb.
+    // allFinger: all 12 finger links per side (index/middle/ring, 4 links each)
+    //            used for table floor Y check.
+    auto findNodeByName = [&](const char* name) -> SceneNode* {
+        for(auto* n : model->allNodes())
+            if(n->name == name) return n;
+        return nullptr;
+    };
+    struct FingerNodeCache {
+        SceneNode* thumbFlex[2]   = {};  // link3, link4
+        SceneNode* otherFinger[6] = {};  // link5,6, 9,10, 13,14
+        SceneNode* allFinger[12]  = {};  // link5-16
+    } fingerCache[2];
+
+    static const char* kThumbFlexL[2]    = {"finger_l_link3","finger_l_link4"};
+    static const char* kThumbFlexR[2]    = {"finger_r_link3","finger_r_link4"};
+    static const char* kOtherFingerL[6]  = {
+        "finger_l_link5","finger_l_link6",
+        "finger_l_link9","finger_l_link10",
+        "finger_l_link13","finger_l_link14"};
+    static const char* kOtherFingerR[6]  = {
+        "finger_r_link5","finger_r_link6",
+        "finger_r_link9","finger_r_link10",
+        "finger_r_link13","finger_r_link14"};
+
+    for(int i = 0; i < 2; ++i) {
+        fingerCache[0].thumbFlex[i]    = findNodeByName(kThumbFlexL[i]);
+        fingerCache[1].thumbFlex[i]    = findNodeByName(kThumbFlexR[i]);
+        fingerCache[0].otherFinger[i]  = findNodeByName(kOtherFingerL[i]);
+        fingerCache[1].otherFinger[i]  = findNodeByName(kOtherFingerR[i]);
+    }
+    for(int i = 2; i < 6; ++i) {
+        fingerCache[0].otherFinger[i]  = findNodeByName(kOtherFingerL[i]);
+        fingerCache[1].otherFinger[i]  = findNodeByName(kOtherFingerR[i]);
+    }
+    // allFinger: finger_l/r_link5 through link16 (indices 0-11 = links 5-16)
+    for(int i = 0; i < 12; ++i) {
+        char namL[32], namR[32];
+        snprintf(namL, 32, "finger_l_link%d", i + 5);
+        snprintf(namR, 32, "finger_r_link%d", i + 5);
+        fingerCache[0].allFinger[i] = findNodeByName(namL);
+        fingerCache[1].allFinger[i] = findNodeByName(namR);
+    }
 
     // Force wheel drive joints unlimited (continuous)
     for(const char* name : {"left_wheel_drive_joint",
@@ -741,26 +786,23 @@ int main(int argc, char** argv) {
             model->update();  // final FK after all joint changes
 
             // ── Arm-table penetration correction ─────────────────────────────
-            // After IK, check every arm link's world-Y.  If any link has dipped
-            // below the table surface (common when the arm curves forward/down),
-            // lift the IK world target and re-solve.  Converges in ≤5 steps.
-            // Only runs in standard IK mode (wrist-FK mode uses joints 1-4 only
-            // and rarely hits the table with those links).
-            if(tableTopY > 0.f && !jointPanel.ikUseOrientation) {
-                constexpr float kTableMargin = 0.005f;  // 5 mm safety gap
-                for(int iter = 0; iter < 5; ++iter) {
+            // After IK, check every arm link's world-Y.  If any link dips below
+            // the table surface, lift the IK world target and re-solve.
+            // Runs in BOTH standard-IK and wrist-FK modes (≤10 iterations).
+            if(tableTopY > 0.f) {
+                constexpr float kTableMargin = 0.005f;
+                for(int iter = 0; iter < 10; ++iter) {
                     float lift = 0.f;
                     for(auto* n : armNodes) {
                         float y = n->worldTransform.transformPoint({0,0,0}).y;
                         float below = (tableTopY + kTableMargin) - y;
                         if(below > lift) lift = below;
                     }
-                    if(lift < 0.001f) break;
+                    if(lift < 0.0005f) break;
 
                     ikWorldL.y += lift;
                     ikWorldR.y += lift;
 
-                    // Clamp lifted target back inside workspace sphere
                     if(shoulderL && maxReachL > 0.01f) {
                         Vec3 sW = shoulderL->worldTransform.transformPoint({0,0,0});
                         ikWorldL = InverseKinematics::clampToWorkspace(ikWorldL, sW, maxReachL);
@@ -770,11 +812,29 @@ int main(int argc, char** argv) {
                         ikWorldR = InverseKinematics::clampToWorkspace(ikWorldR, sW, maxReachR);
                     }
 
-                    IKConfig cfg; cfg.useOrientation = false;
-                    if(eeL) InverseKinematics::solve6(model->root.get(), eeL,
-                                ikWorldL, Quaternion::identity(), false, cfg, chainStop);
-                    if(eeR) InverseKinematics::solve6(model->root.get(), eeR,
-                                ikWorldR, Quaternion::identity(), false, cfg, chainStop);
+                    if(jointPanel.ikUseOrientation) {
+                        // Wrist-FK mode: re-derive link4 target from lifted palm target
+                        Vec3 l4L = ikWorldL, l4R = ikWorldR;
+                        if(ikEeL && eeL)
+                            l4L = ikWorldL - (eeL->worldTransform.transformPoint({0,0,0})
+                                            - ikEeL->worldTransform.transformPoint({0,0,0}));
+                        if(ikEeR && eeR)
+                            l4R = ikWorldR - (eeR->worldTransform.transformPoint({0,0,0})
+                                           - ikEeR->worldTransform.transformPoint({0,0,0}));
+                        IKConfig cfg;
+                        cfg.maxIter = 20; cfg.dampingLambda = 0.05f;
+                        cfg.maxJointDelta = 0.05f; cfg.useOrientation = false;
+                        if(ikEeL) InverseKinematics::solve6(model->root.get(), ikEeL,
+                                    l4L, Quaternion::identity(), false, cfg, chainStop);
+                        if(ikEeR) InverseKinematics::solve6(model->root.get(), ikEeR,
+                                    l4R, Quaternion::identity(), false, cfg, chainStop);
+                    } else {
+                        IKConfig cfg; cfg.useOrientation = false;
+                        if(eeL) InverseKinematics::solve6(model->root.get(), eeL,
+                                    ikWorldL, Quaternion::identity(), false, cfg, chainStop);
+                        if(eeR) InverseKinematics::solve6(model->root.get(), eeR,
+                                    ikWorldR, Quaternion::identity(), false, cfg, chainStop);
+                    }
                     model->update();
                 }
             }
@@ -837,71 +897,16 @@ int main(int argc, char** argv) {
         // ── Sync arm/finger collision bodies (kinematic, FK-driven) ─────────
         robotCollider.update();
 
-        // ── Thumb–finger penetration prevention ──────────────────────────────
-        // Kinematic bodies cannot respond to each other in Bullet, so we detect
-        // thumb↔finger overlap via contactPairTest and binary-search for the
-        // maximum thumbGrip that produces zero penetration.  This converges in a
-        // single render frame (8 bisection steps → 1/256 grip resolution).
+        // ── Finger self-collision + floor penetration prevention ─────────────
+        // Kinematic bodies cannot physically respond to each other in Bullet.
+        // We detect contact using FK world-space positions and binary-search
+        // the grip parameters to prevent:
+        //   (A) thumb (link3/4) penetrating other finger links (5-16)
+        //   (B) any finger link going below the table surface
+        // Both checks run every frame; each binary search converges in 8 steps.
         {
-            // GJK callback: collects deepest penetration across all contact points.
-            // filterGroup/Mask = -1 bypasses the broadphase group check so two
-            // kinematic bodies (same group/mask) are still tested.
-            struct MaxDepthCB : btCollisionWorld::ContactResultCallback {
-                float maxDepth = 0.f;
-                MaxDepthCB() {
-                    m_collisionFilterGroup = -1;
-                    m_collisionFilterMask  = -1;
-                }
-                btScalar addSingleResult(btManifoldPoint& cp,
-                    const btCollisionObjectWrapper*, int, int,
-                    const btCollisionObjectWrapper*, int, int) override
-                {
-                    float d = -cp.getDistance();   // getDistance < 0 → overlap
-                    if(d > maxDepth) maxDepth = d;
-                    return 0.f;
-                }
-            };
-
-            // Thumb links that close toward the other fingers: proximal (link3)
-            // and distal (link4).  link1/2 (CMC base) are far from other fingers.
-            static const char* kThumb[2][2] = {
-                {"finger_l_link3", "finger_l_link4"},
-                {"finger_r_link3", "finger_r_link4"},
-            };
-            // Other-finger links the thumb is most likely to contact.
-            // Index MCP+PIP (5,6), Middle MCP+PIP (9,10), Ring MCP+PIP (13,14).
-            // Pinky (17-20) stays clear in normal grasps and is skipped.
-            static const char* kFinger[2][6] = {
-                {"finger_l_link5","finger_l_link6",
-                 "finger_l_link9","finger_l_link10",
-                 "finger_l_link13","finger_l_link14"},
-                {"finger_r_link5","finger_r_link6",
-                 "finger_r_link9","finger_r_link10",
-                 "finger_r_link13","finger_r_link14"},
-            };
-
-            btCollisionWorld* bw = physics.bulletWorld();
-
-            // Lambda: measure worst penetration for the given side.
-            auto measurePen = [&](int side) -> float {
-                float pen = 0.f;
-                for(int ti = 0; ti < 2; ++ti) {
-                    btRigidBody* tb = robotCollider.bodyForName(kThumb[side][ti]);
-                    if(!tb) continue;
-                    for(int fi = 0; fi < 6; ++fi) {
-                        btRigidBody* fb = robotCollider.bodyForName(kFinger[side][fi]);
-                        if(!fb) continue;
-                        MaxDepthCB cb;
-                        bw->contactPairTest(tb, fb, cb);
-                        if(cb.maxDepth > pen) pen = cb.maxDepth;
-                    }
-                }
-                return pen;
-            };
-
-            // Lambda: apply thumbGrip for one side, re-run FK + Bullet update.
-            auto applyGrip = [&](int side, float grip) {
-                handPanel.thumbGrip[side] = grip;
+            // Re-apply hand FK and sync Bullet transforms (called inside binary search).
+            auto applyHandFK = [&]() {
                 HandPanel::applyToModel(*model,
                     handPanel.thumbGrip[0], handPanel.fingerGrip[0],
                     handPanel.thumbGrip[1], handPanel.fingerGrip[1]);
@@ -909,26 +914,72 @@ int main(int argc, char** argv) {
                 robotCollider.update();
             };
 
-            constexpr float kPenTol = 0.0005f;  // 0.5 mm tolerance
+            // World position of a cached node (returns far-away sentinel if null).
+            auto nodeWP = [](SceneNode* n) -> Vec3 {
+                return n ? n->worldTransform.transformPoint({0,0,0}) : Vec3{1e9f,1e9f,1e9f};
+            };
+
+            // Distance threshold: two link origins < kContactDist → "touching".
+            // Finger links are ~10 mm wide; 15 mm keeps a small safety margin.
+            constexpr float kContactDist = 0.015f;
 
             for(int side = 0; side < 2; ++side) {
-                if(handPanel.thumbGrip[side] <= 0.f) continue;
+                const FingerNodeCache& fc = fingerCache[side];
 
-                // Quick check at current grip — skip binary search if no overlap.
-                if(measurePen(side) <= kPenTol) continue;
+                // ── (A) Thumb vs other fingers (binary search on thumbGrip) ───
+                if(handPanel.thumbGrip[side] > 0.f) {
+                    auto thumbTouchesFingers = [&]() -> bool {
+                        for(int ti = 0; ti < 2; ++ti) {
+                            Vec3 tp = nodeWP(fc.thumbFlex[ti]);
+                            if(tp.x > 1e8f) continue;
+                            for(int fi = 0; fi < 6; ++fi) {
+                                Vec3 fp = nodeWP(fc.otherFinger[fi]);
+                                if(fp.x > 1e8f) continue;
+                                float dx=tp.x-fp.x, dy=tp.y-fp.y, dz=tp.z-fp.z;
+                                if(dx*dx + dy*dy + dz*dz < kContactDist*kContactDist)
+                                    return true;
+                            }
+                        }
+                        return false;
+                    };
 
-                // Binary search: find max grip with zero penetration.
-                // grip=0 is always safe; hi starts at the current desired grip.
-                float lo = 0.f;
-                float hi = handPanel.thumbGrip[side];
-                for(int iter = 0; iter < 8; ++iter) {
-                    float mid = 0.5f * (lo + hi);
-                    applyGrip(side, mid);
-                    if(measurePen(side) > kPenTol) hi = mid;
-                    else                            lo = mid;
+                    if(thumbTouchesFingers()) {
+                        float lo = 0.f, hi = handPanel.thumbGrip[side];
+                        for(int iter = 0; iter < 8; ++iter) {
+                            handPanel.thumbGrip[side] = 0.5f * (lo + hi);
+                            applyHandFK();
+                            if(thumbTouchesFingers()) hi = handPanel.thumbGrip[side];
+                            else                      lo = handPanel.thumbGrip[side];
+                        }
+                        handPanel.thumbGrip[side] = lo;
+                        applyHandFK();
+                    }
                 }
-                // Commit the last safe grip (lo = last value with no penetration).
-                applyGrip(side, lo);
+
+                // ── (B) Finger links vs table floor (binary search on fingerGrip) ──
+                if(tableTopY > 0.f && handPanel.fingerGrip[side] > 0.f) {
+                    constexpr float kFloorGap = 0.003f;  // 3 mm above table surface
+                    auto fingerBelowFloor = [&]() -> bool {
+                        for(int fi = 0; fi < 12; ++fi) {
+                            Vec3 p = nodeWP(fc.allFinger[fi]);
+                            if(p.x > 1e8f) continue;
+                            if(p.y < tableTopY + kFloorGap) return true;
+                        }
+                        return false;
+                    };
+
+                    if(fingerBelowFloor()) {
+                        float lo = 0.f, hi = handPanel.fingerGrip[side];
+                        for(int iter = 0; iter < 8; ++iter) {
+                            handPanel.fingerGrip[side] = 0.5f * (lo + hi);
+                            applyHandFK();
+                            if(fingerBelowFloor()) hi = handPanel.fingerGrip[side];
+                            else                   lo = handPanel.fingerGrip[side];
+                        }
+                        handPanel.fingerGrip[side] = lo;
+                        applyHandFK();
+                    }
+                }
             }
         }
 
