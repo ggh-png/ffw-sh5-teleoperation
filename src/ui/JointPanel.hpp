@@ -1,7 +1,6 @@
 #pragma once
 #include "robot/RobotModel.hpp"
 #include "math/Vec3.hpp"
-#include "math/Quaternion.hpp"
 #include <vector>
 #include <string>
 
@@ -17,26 +16,17 @@ public:
     JointGroup group   = JointGroup::All;
     bool       ikMode  = false;     // false=FK (joint angle), true=IK (ee target)
 
-    // IK targets: position (base-local Y-up) + orientation
+    // IK targets: position (base-local Y-up)
     Vec3       ikTargetL    = {0.3f,  1.2f, -0.4f};
     Vec3       ikTargetR    = {0.3f,  1.2f,  0.4f};
-    // ikTargetRot* — the "approach" quaternion, smoothly slerped toward ikDesiredRot*
-    // by main.cpp each frame.  IK uses this to minimize orientation error.
-    Quaternion ikTargetRotL = Quaternion::identity();
-    Quaternion ikTargetRotR = Quaternion::identity();
-    // ikDesiredRot* — the slider-set goal.  May differ from ikTargetRot* while slerping.
-    Quaternion ikDesiredRotL = Quaternion::identity();
-    Quaternion ikDesiredRotR = Quaternion::identity();
-    bool       ikUseOrientation  = false;
-    // true = orientation control active; arm tracks ikDesiredRot* via slerp + null-space IK
-    bool       ikOrientControlL  = false;
-    bool       ikOrientControlR  = false;
 
-    // Set true by draw() when RPY slider was actively dragged this frame,
-    // OR by main.cpp when slerping is still in progress.
-    // Selects solveHierarchical (null-space) instead of solve6.
-    bool       ikRotChangedL = false;
-    bool       ikRotChangedR = false;
+    // Orientation mode: wrist joints driven directly by RPY sliders (FK, not IK).
+    // [side][0]=arm_*_joint5(roll), [1]=joint6(pitch), [2]=joint7(yaw)  — radians
+    bool       ikUseOrientation = false;
+    float      wristRad[2][3]   = {};
+    // Set true by draw() when orientation toggle is first enabled,
+    // so main.cpp can initialize wristRad from current model joints.
+    bool       initWristFromModel = false;
 
     // Returns true if any joint value changed via slider
     bool draw(RobotModel& model);

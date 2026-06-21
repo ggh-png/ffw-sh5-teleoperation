@@ -65,8 +65,6 @@ bool JointPanel::draw(RobotModel& model) {
                                              (int)m_joints.size() - 1));
 
     bool changed = false;
-    ikRotChangedL = false;  // reset each frame; set below if RPY slider moved
-    ikRotChangedR = false;
 
     ImGui::SetNextWindowSize({360, 620}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos({10, 10},   ImGuiCond_FirstUseEver);
@@ -120,81 +118,62 @@ bool JointPanel::draw(RobotModel& model) {
             ImGui::PopStyleColor();
         };
 
-        // Left arm position — locked (greyed-out) while orientation control is active.
+        // Left arm position
         ImGui::PushStyleColor(ImGuiCol_FrameBg, {0.10f,0.30f,0.10f,0.8f});
-        ImGui::BeginDisabled(ikUseOrientation);
         ImGui::DragFloat("L-X (fwd)##iktlx", &ikTargetL.x, 0.001f,-1.5f,1.5f,"%.3f m");
         showPBar(ikTargetL.x, -1.5f, 1.5f);
         ImGui::DragFloat("L-Y (up) ##iktly", &ikTargetL.y, 0.001f,-0.5f,2.0f,"%.3f m");
         showPBar(ikTargetL.y, -0.5f, 2.0f);
         ImGui::DragFloat("L-Z (lat)##iktlz", &ikTargetL.z, 0.001f,-1.5f,1.5f,"%.3f m");
         showPBar(ikTargetL.z, -1.5f, 1.5f);
-        ImGui::EndDisabled();
 
-        // Left arm orientation in degrees.
-        // Base-local frame: X=fwd, Y=up, Z=lateral.
-        // fromRPY arg2 (Ry) rotates around UP  → user sees this as Yaw (turn L/R).
-        // fromRPY arg3 (Rz) rotates around LAT → user sees this as Pitch (tilt fwd/back).
+        // Left wrist FK (joint5=roll/Z, joint6=pitch/Y, joint7=yaw/X)
         if(ikUseOrientation) {
-            float rl,pl,yl; ikTargetRotL.toRPY(rl,pl,yl);
-            // toRPY (ZYX): rl=Rx, pl=Ry, yl=Rz
-            // Axis assignment for arm reaching toward -Z (can direction):
-            //   Roll  = Rz (rotation around lateral Z) → spins palm around arm axis
-            //   Pitch = Rx (rotation around forward X) → tilts palm perpendicular to arm
-            //   Yaw   = Ry (rotation around up Y)      → turns palm left/right
-            // Swapped from base-convention (Roll=Rx, Pitch=Rz) because when the arm
-            // extends in -Z, Rx and Rz are both perpendicular to the arm and look the
-            // same; Rz is the true "spin" axis (roll) for that reach direction.
-            float rldeg=toDeg(yl), pitchDeg=toDeg(rl), yawDeg=toDeg(pl);
-            bool chL = ImGui::SliderFloat("L-Roll##ikr",  &rldeg,   -180.f, 180.f, "%.1f°");
-            chL |=     ImGui::SliderFloat("L-Pitch##ikp", &pitchDeg,-180.f, 180.f, "%.1f°");
-            chL |=     ImGui::SliderFloat("L-Yaw##iky",   &yawDeg,   -90.f,  90.f, "%.1f°");
-            if(chL) {
-                // Update desired target; main.cpp slerps ikTargetRotL toward this.
-                ikDesiredRotL = Quaternion::fromRPY(
-                    toRad(pitchDeg), toRad(yawDeg), toRad(rldeg));
-                ikOrientControlL = true;
-                ikRotChangedL    = true;
+            float rd = toDeg(wristRad[0][0]);
+            float pd = toDeg(wristRad[0][1]);
+            float yd = toDeg(wristRad[0][2]);
+            bool ch = ImGui::SliderFloat("L-Roll##wrl",  &rd, -180.f, 180.f, "%.1f°");
+            ch |=     ImGui::SliderFloat("L-Pitch##wpl", &pd,  -90.f,  90.f, "%.1f°");
+            ch |=     ImGui::SliderFloat("L-Yaw##wyl",   &yd, -104.f, 104.f, "%.1f°");
+            if(ch) {
+                wristRad[0][0] = toRad(rd);
+                wristRad[0][1] = toRad(pd);
+                wristRad[0][2] = toRad(yd);
+                changed = true;
             }
         }
         ImGui::PopStyleColor();
 
-        // Right arm position — locked (greyed-out) while orientation control is active.
+        // Right arm position
         ImGui::PushStyleColor(ImGuiCol_FrameBg, {0.30f,0.10f,0.10f,0.8f});
-        ImGui::BeginDisabled(ikUseOrientation);
         ImGui::DragFloat("R-X (fwd)##iktrx", &ikTargetR.x, 0.001f,-1.5f,1.5f,"%.3f m");
         showPBar(ikTargetR.x, -1.5f, 1.5f);
         ImGui::DragFloat("R-Y (up) ##iktry", &ikTargetR.y, 0.001f,-0.5f,2.0f,"%.3f m");
         showPBar(ikTargetR.y, -0.5f, 2.0f);
         ImGui::DragFloat("R-Z (lat)##iktrz", &ikTargetR.z, 0.001f,-1.5f,1.5f,"%.3f m");
         showPBar(ikTargetR.z, -1.5f, 1.5f);
-        ImGui::EndDisabled();
 
-        // Right arm orientation — same axis swap as left arm.
+        // Right wrist FK (joint5=roll/Z, joint6=pitch/Y, joint7=yaw/X)
         if(ikUseOrientation) {
-            float rr,pr,yr; ikTargetRotR.toRPY(rr,pr,yr);
-            // Roll=Rz(yr), Pitch=Rx(rr), Yaw=Ry(pr) — same convention as left arm
-            float rrdeg=toDeg(yr), pitchDeg=toDeg(rr), yawDeg=toDeg(pr);
-            bool chR = ImGui::SliderFloat("R-Roll##ikrr",  &rrdeg,   -180.f, 180.f, "%.1f°");
-            chR |=     ImGui::SliderFloat("R-Pitch##ikpr", &pitchDeg,-180.f, 180.f, "%.1f°");
-            chR |=     ImGui::SliderFloat("R-Yaw##ikyr",   &yawDeg,   -90.f,  90.f, "%.1f°");
-            if(chR) {
-                ikDesiredRotR = Quaternion::fromRPY(
-                    toRad(pitchDeg), toRad(yawDeg), toRad(rrdeg));
-                ikOrientControlR = true;
-                ikRotChangedR    = true;
+            float rd = toDeg(wristRad[1][0]);
+            float pd = toDeg(wristRad[1][1]);
+            float yd = toDeg(wristRad[1][2]);
+            bool ch = ImGui::SliderFloat("R-Roll##wrr",  &rd, -180.f, 180.f, "%.1f°");
+            ch |=     ImGui::SliderFloat("R-Pitch##wpr", &pd,  -90.f,  90.f, "%.1f°");
+            ch |=     ImGui::SliderFloat("R-Yaw##wyr",   &yd, -104.f, 104.f, "%.1f°");
+            if(ch) {
+                wristRad[1][0] = toRad(rd);
+                wristRad[1][1] = toRad(pd);
+                wristRad[1][2] = toRad(yd);
+                changed = true;
             }
         }
         ImGui::PopStyleColor();
 
         bool prevOri = ikUseOrientation;
-        ImGui::Checkbox("Use Orientation (RPY)", &ikUseOrientation);
-        if(prevOri && !ikUseOrientation) {
-            // Orientation mode disabled — stop orientation control so arm
-            // returns to pure position IK and syncs rotation from FK again.
-            ikOrientControlL = false;
-            ikOrientControlR = false;
-        }
+        ImGui::Checkbox("Wrist FK (Roll/Pitch/Yaw)", &ikUseOrientation);
+        if(!prevOri && ikUseOrientation)
+            initWristFromModel = true;  // main.cpp reads current joint angles
         ImGui::Separator();
     }
 

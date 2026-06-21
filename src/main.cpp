@@ -194,14 +194,22 @@ int main(int argc, char** argv) {
     }
 
     // ── IK and hand nodes ─────────────────────────────────────────────────
-    // Use hx5 hand palm as EE so IK positions the actual grasp point, not the wrist.
-    // hx5_l_base is 78mm beyond arm_l_link7; targeting the palm makes grasping work.
+    // Full EE = hx5_l/r_base (palm): used when wrist FK mode is OFF.
     SceneNode* eeL   = ForwardKinematics::findByName(*model->root, "hx5_l_base");
     SceneNode* eeR   = ForwardKinematics::findByName(*model->root, "hx5_r_base");
     if(!eeL) eeL = ForwardKinematics::findByName(*model->root, "arm_l_link7");
     if(!eeR) eeR = ForwardKinematics::findByName(*model->root, "arm_r_link7");
     SceneNode* handL = eeL;
     SceneNode* handR = eeR;
+
+    // Wrist-split EE = arm_l/r_link4: used when wrist FK mode is ON.
+    // Joints 5/6/7 are FK-controlled (wristRad). The IK chain from arm_l_link4
+    // toward root only traverses joint4→joint3→joint2→joint1 — never touching
+    // joint5/6/7. This prevents the IK↔FK wrist conflict that causes flying.
+    SceneNode* ikEeL = ForwardKinematics::findByName(*model->root, "arm_l_link4");
+    SceneNode* ikEeR = ForwardKinematics::findByName(*model->root, "arm_r_link4");
+    if(!ikEeL) ikEeL = eeL;
+    if(!ikEeR) ikEeR = eeR;
 
 
     // Arm chain boundaries:
@@ -581,76 +589,44 @@ int main(int argc, char** argv) {
             return {wp.x, wp.y - kWheelGroundOfs, wp.z};
         };
 
-        // ── IK mode transition: initialize targets from current FK EE pos ────
+        // ── IK mode transition: initialize position target from current EE ──
         if(jointPanel.ikMode && !lastIkMode) {
             Quaternion baseRot = physics.baseOrientation();
             Vec3       vbase   = visualBasePos();
             if(eeL) {
                 Vec3 eeW = eeL->worldTransform.transformPoint({0,0,0});
-                jointPanel.ikTargetL    = baseRot.conjugate().rotate(eeW - vbase);
-                // Base-local orientation: q_base^{-1} * q_ee_world
-                jointPanel.ikTargetRotL = (baseRot.conjugate()
-                                           * eeL->worldTransform.extractRotation()).normalized();
+                jointPanel.ikTargetL = baseRot.conjugate().rotate(eeW - vbase);
             }
             if(eeR) {
                 Vec3 eeW = eeR->worldTransform.transformPoint({0,0,0});
-                jointPanel.ikTargetR    = baseRot.conjugate().rotate(eeW - vbase);
-                jointPanel.ikTargetRotR = (baseRot.conjugate()
-                                           * eeR->worldTransform.extractRotation()).normalized();
+                jointPanel.ikTargetR = baseRot.conjugate().rotate(eeW - vbase);
             }
-        }
-        // While in IK mode but orientation is not actively controlled, keep
-        // the orientation target synced to current FK so enabling it later
-        // never causes a sudden jump.
-        if(jointPanel.ikMode && !jointPanel.ikUseOrientation) {
-            Quaternion baseRot = physics.baseOrientation();
-            if(eeL)
-                jointPanel.ikTargetRotL = (baseRot.conjugate()
-                    * eeL->worldTransform.extractRotation()).normalized();
-            if(eeR)
-                jointPanel.ikTargetRotR = (baseRot.conjugate()
-                    * eeR->worldTransform.extractRotation()).normalized();
-        }
-        // Apply desired rotation from RPY sliders to the IK target.
-        if(jointPanel.ikMode && jointPanel.ikUseOrientation) {
-            if(jointPanel.ikOrientControlL)
-                jointPanel.ikTargetRotL = jointPanel.ikDesiredRotL;
-            if(jointPanel.ikOrientControlR)
-                jointPanel.ikTargetRotR = jointPanel.ikDesiredRotR;
+            // Also read current wrist joints into wristRad to avoid a jump
+            jointPanel.initWristFromModel = true;
         }
         lastIkMode = jointPanel.ikMode;
 
+        // Initialize wristRad from current model joints when FK wrist mode is enabled
+        if(jointPanel.initWristFromModel) {
+            jointPanel.initWristFromModel = false;
+            static const char* kWL[3] = {"arm_l_joint5","arm_l_joint6","arm_l_joint7"};
+            static const char* kWR[3] = {"arm_r_joint5","arm_r_joint6","arm_r_joint7"};
+            for(int j = 0; j < 3; ++j) {
+                if(auto* n = model->findJoint(kWL[j])) jointPanel.wristRad[0][j] = n->joint.value;
+                if(auto* n = model->findJoint(kWR[j])) jointPanel.wristRad[1][j] = n->joint.value;
+            }
+        }
+
         // ── IK ────────────────────────────────────────────────────────────
         if(jointPanel.ikMode) {
-            // Convert base-local IK offsets → world targets (using visual base)
             Quaternion baseRot = physics.baseOrientation();
             Vec3       vbase   = visualBasePos();
 
-            // When the user drags an RPY slider, keep the PALM CENTER fixed in
-            // world space — not the hx5_*_base origin.
-            // palmLocal: offset from hx5_*_base to palm center (hand-local frame).
-            // Required EE pos = palmCenterWorld - newWorldRot.rotate(palmLocal)
-            static const Vec3 kPalmLocalL{ -0.0015f, -0.009f, 0.06f };
-            static const Vec3 kPalmLocalR{ -0.0015f,  0.009f, 0.06f };
-
-            if(jointPanel.ikRotChangedL && eeL) {
-                Vec3 palmW = eeL->worldTransform.transformPoint(kPalmLocalL);
-                Quaternion nwr = (baseRot * jointPanel.ikDesiredRotL).normalized();
-                Vec3 newEeW = palmW - nwr.rotate(kPalmLocalL);
-                jointPanel.ikTargetL = baseRot.conjugate().rotate(newEeW - vbase);
-            }
-            if(jointPanel.ikRotChangedR && eeR) {
-                Vec3 palmW = eeR->worldTransform.transformPoint(kPalmLocalR);
-                Quaternion nwr = (baseRot * jointPanel.ikDesiredRotR).normalized();
-                Vec3 newEeW = palmW - nwr.rotate(kPalmLocalR);
-                jointPanel.ikTargetR = baseRot.conjugate().rotate(newEeW - vbase);
-            }
-
+            // Palm world-space targets (what the user sees as XYZ sliders)
             Vec3 ikWorldL = baseRot.rotate(jointPanel.ikTargetL) + vbase;
             Vec3 ikWorldR = baseRot.rotate(jointPanel.ikTargetR) + vbase;
 
-            // ── Workspace clamping: keep targets inside the reachable sphere ─
-            // Shoulder world positions update each frame (robot can move/rotate).
+            // Workspace clamping: keep palm targets inside the reachable sphere
             if(shoulderL && maxReachL > 0.01f) {
                 Vec3 sW = shoulderL->worldTransform.transformPoint({0,0,0});
                 ikWorldL = InverseKinematics::clampToWorkspace(ikWorldL, sW, maxReachL);
@@ -660,28 +636,99 @@ int main(int argc, char** argv) {
                 ikWorldR = InverseKinematics::clampToWorkspace(ikWorldR, sW, maxReachR);
             }
 
-            IKConfig cfg;
-            cfg.useOrientation = jointPanel.ikUseOrientation;
-
-            // Convert base-local orientation targets to world space
-            Quaternion worldRotL = (baseRot * jointPanel.ikTargetRotL).normalized();
-            Quaternion worldRotR = (baseRot * jointPanel.ikTargetRotR).normalized();
-
-            // chainStop limits traversal to the 7 arm joints only
-            // (prevents IK from accidentally moving lift, wheels, etc.)
-            if(eeL) InverseKinematics::solve6(model->root.get(), eeL,
-                        ikWorldL, worldRotL,
-                        jointPanel.ikUseOrientation, cfg, chainStop);
-            if(eeR) InverseKinematics::solve6(model->root.get(), eeR,
-                        ikWorldR, worldRotR,
-                        jointPanel.ikUseOrientation, cfg, chainStop);
-
-            // Update world-space markers for renderer
             renderer.ikTargetL = ikWorldL;
             renderer.ikTargetR = ikWorldR;
 
-            // IK residual error: distance from EE (after solve) to target
-            model->update();  // compute updated world transforms
+            if(jointPanel.ikUseOrientation) {
+                // ── Wrist FK mode: joint5/6/7 are set first (pure FK), then
+                //    IK positions joint1-4 only via arm_l/r_link4 as virtual EE.
+                //    This eliminates the IK↔FK wrist conflict that causes flying.
+                // ─────────────────────────────────────────────────────────────
+                static const char* kWL[3] = {"arm_l_joint5","arm_l_joint6","arm_l_joint7"};
+                static const char* kWR[3] = {"arm_r_joint5","arm_r_joint6","arm_r_joint7"};
+
+                // Step 1: Apply wrist FK (joint5/6/7 → wristRad)
+                for(int j = 0; j < 3; ++j) {
+                    if(auto* n = model->findJoint(kWL[j]))
+                        { n->joint.value = jointPanel.wristRad[0][j]; n->joint.clamp(); }
+                    if(auto* n = model->findJoint(kWR[j]))
+                        { n->joint.value = jointPanel.wristRad[1][j]; n->joint.clamp(); }
+                }
+                model->update();  // propagate wrist FK → palm worldTransform is now correct
+
+                // Step 2: Compute the fixed wrist offset (link4→palm in world space).
+                //   This offset only depends on joint5/6/7 which are now fixed.
+                //   IK just needs to put link4 at (palm_target − wrist_offset).
+                Vec3 link4TargetL = ikWorldL, link4TargetR = ikWorldR;
+                if(ikEeL && eeL)
+                    link4TargetL = ikWorldL
+                        - (eeL->worldTransform.transformPoint({0,0,0})
+                         - ikEeL->worldTransform.transformPoint({0,0,0}));
+                if(ikEeR && eeR)
+                    link4TargetR = ikWorldR
+                        - (eeR->worldTransform.transformPoint({0,0,0})
+                         - ikEeR->worldTransform.transformPoint({0,0,0}));
+
+                // Step 3: Per-frame joint velocity snapshot (safety net against large jumps)
+                static const char* kArmL[4] = {"arm_l_link1","arm_l_link2","arm_l_link3","arm_l_link4"};
+                static const char* kArmR[4] = {"arm_r_link1","arm_r_link2","arm_r_link3","arm_r_link4"};
+                float preL[4] = {}, preR[4] = {};
+                for(int j = 0; j < 4; ++j) {
+                    if(auto* n = model->findJoint(kArmL[j])) preL[j] = n->joint.value;
+                    if(auto* n = model->findJoint(kArmR[j])) preR[j] = n->joint.value;
+                }
+
+                // Step 4: IK on joint1-4 only (EE = arm_l/r_link4)
+                //   Fewer iterations + heavier damping = smooth, no oscillation
+                IKConfig cfg;
+                cfg.maxIter       = 20;     // arm already converged; 20 is plenty to track
+                cfg.dampingLambda = 0.05f;  // heavier damping → gentler corrections
+                cfg.maxJointDelta = 0.05f;  // ≈3° per iteration max
+                cfg.useOrientation = false;
+
+                if(ikEeL) InverseKinematics::solve6(model->root.get(), ikEeL,
+                            link4TargetL, Quaternion::identity(), false, cfg, chainStop);
+                if(ikEeR) InverseKinematics::solve6(model->root.get(), ikEeR,
+                            link4TargetR, Quaternion::identity(), false, cfg, chainStop);
+
+                // Step 5: Per-frame velocity clamp on joint1-4 (≈8.6°/frame max)
+                constexpr float kMaxVelRad = 0.15f;
+                for(int j = 0; j < 4; ++j) {
+                    if(auto* n = model->findJoint(kArmL[j])) {
+                        float d = n->joint.value - preL[j];
+                        n->joint.value = preL[j]
+                            + (d > kMaxVelRad ? kMaxVelRad : (d < -kMaxVelRad ? -kMaxVelRad : d));
+                        n->joint.clamp();
+                    }
+                    if(auto* n = model->findJoint(kArmR[j])) {
+                        float d = n->joint.value - preR[j];
+                        n->joint.value = preR[j]
+                            + (d > kMaxVelRad ? kMaxVelRad : (d < -kMaxVelRad ? -kMaxVelRad : d));
+                        n->joint.clamp();
+                    }
+                }
+
+                // Step 6: Re-apply wrist FK (IK above only touched joint1-4, but
+                //   clamp inside solve6 might have called FK — re-enforce wristRad)
+                for(int j = 0; j < 3; ++j) {
+                    if(auto* n = model->findJoint(kWL[j]))
+                        { n->joint.value = jointPanel.wristRad[0][j]; n->joint.clamp(); }
+                    if(auto* n = model->findJoint(kWR[j]))
+                        { n->joint.value = jointPanel.wristRad[1][j]; n->joint.clamp(); }
+                }
+
+            } else {
+                // ── Standard IK: all 7 arm joints, EE = hx5_l/r_base (palm) ──
+                IKConfig cfg;
+                cfg.useOrientation = false;
+                if(eeL) InverseKinematics::solve6(model->root.get(), eeL,
+                            ikWorldL, Quaternion::identity(), false, cfg, chainStop);
+                if(eeR) InverseKinematics::solve6(model->root.get(), eeR,
+                            ikWorldR, Quaternion::identity(), false, cfg, chainStop);
+            }
+
+            model->update();  // final FK after all joint changes
+
             auto errDist = [](SceneNode* ee, const Vec3& tgt) -> float {
                 if(!ee) return 0.f;
                 Vec3 p = ee->worldTransform.transformPoint({0,0,0});
