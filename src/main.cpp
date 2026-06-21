@@ -789,16 +789,17 @@ int main(int argc, char** argv) {
         robotCollider.update();
 
         // ── Thumb–finger penetration prevention ──────────────────────────────
-        // Kinematic bodies cannot physically stop each other. We use
-        // contactPairTest (immediate narrow-phase GJK) to measure overlap and
-        // back off thumbGrip so the thumb never visually passes through the
-        // other fingers.  Converges in 1-2 frames at ≤60 fps.
+        // Kinematic bodies cannot respond to each other in Bullet, so we detect
+        // thumb↔finger overlap via contactPairTest and binary-search for the
+        // maximum thumbGrip that produces zero penetration.  This converges in a
+        // single render frame (8 bisection steps → 1/256 grip resolution).
         {
-            // Callback: finds the deepest penetration across all contact points.
+            // GJK callback: collects deepest penetration across all contact points.
+            // filterGroup/Mask = -1 bypasses the broadphase group check so two
+            // kinematic bodies (same group/mask) are still tested.
             struct MaxDepthCB : btCollisionWorld::ContactResultCallback {
                 float maxDepth = 0.f;
                 MaxDepthCB() {
-                    // Bypass broadphase filter so kinematic↔kinematic is tested.
                     m_collisionFilterGroup = -1;
                     m_collisionFilterMask  = -1;
                 }
@@ -806,61 +807,79 @@ int main(int argc, char** argv) {
                     const btCollisionObjectWrapper*, int, int,
                     const btCollisionObjectWrapper*, int, int) override
                 {
-                    // getDistance() < 0 means overlap; depth = -distance
-                    float d = -cp.getDistance();
+                    float d = -cp.getDistance();   // getDistance < 0 → overlap
                     if(d > maxDepth) maxDepth = d;
                     return 0.f;
                 }
             };
 
-            // Thumb bodies to check (proximal + distal = link3 and link4).
-            // Skip link1/2 (CMC/MCP base) — they rarely contact other fingers.
-            static const char* kThumbChk[2][2] = {
+            // Thumb links that close toward the other fingers: proximal (link3)
+            // and distal (link4).  link1/2 (CMC base) are far from other fingers.
+            static const char* kThumb[2][2] = {
                 {"finger_l_link3", "finger_l_link4"},
                 {"finger_r_link3", "finger_r_link4"},
             };
-            // Other-finger MCP roots that the thumb is most likely to hit.
-            // (index=5, middle=9, ring=13 — pinky=17 typically stays clear)
-            static const char* kFingerChk[2][3] = {
-                {"finger_l_link5", "finger_l_link9",  "finger_l_link13"},
-                {"finger_r_link5", "finger_r_link9",  "finger_r_link13"},
+            // Other-finger links the thumb is most likely to contact.
+            // Index MCP+PIP (5,6), Middle MCP+PIP (9,10), Ring MCP+PIP (13,14).
+            // Pinky (17-20) stays clear in normal grasps and is skipped.
+            static const char* kFinger[2][6] = {
+                {"finger_l_link5","finger_l_link6",
+                 "finger_l_link9","finger_l_link10",
+                 "finger_l_link13","finger_l_link14"},
+                {"finger_r_link5","finger_r_link6",
+                 "finger_r_link9","finger_r_link10",
+                 "finger_r_link13","finger_r_link14"},
             };
 
             btCollisionWorld* bw = physics.bulletWorld();
 
-            for(int side = 0; side < 2; ++side) {
-                if(handPanel.thumbGrip[side] <= 0.f) continue;
-
-                // Measure max penetration depth between thumb tip and other fingers
+            // Lambda: measure worst penetration for the given side.
+            auto measurePen = [&](int side) -> float {
                 float pen = 0.f;
                 for(int ti = 0; ti < 2; ++ti) {
-                    btRigidBody* tb = robotCollider.bodyForName(kThumbChk[side][ti]);
+                    btRigidBody* tb = robotCollider.bodyForName(kThumb[side][ti]);
                     if(!tb) continue;
-                    for(int fi = 0; fi < 3; ++fi) {
-                        btRigidBody* fb = robotCollider.bodyForName(kFingerChk[side][fi]);
+                    for(int fi = 0; fi < 6; ++fi) {
+                        btRigidBody* fb = robotCollider.bodyForName(kFinger[side][fi]);
                         if(!fb) continue;
                         MaxDepthCB cb;
                         bw->contactPairTest(tb, fb, cb);
                         if(cb.maxDepth > pen) pen = cb.maxDepth;
                     }
                 }
+                return pen;
+            };
 
-                if(pen > 0.001f) {  // > 1 mm geometric overlap → back off
-                    // Proportional back-off capped at 0.15 grip/frame.
-                    // At 60 fps this reduces grip by ≥9 units/s — fast enough
-                    // to feel responsive, slow enough to look smooth.
-                    float reduction = pen * 40.f;
-                    if(reduction > 0.15f) reduction = 0.15f;
-                    handPanel.thumbGrip[side] =
-                        std::max(0.f, handPanel.thumbGrip[side] - reduction);
+            // Lambda: apply thumbGrip for one side, re-run FK + Bullet update.
+            auto applyGrip = [&](int side, float grip) {
+                handPanel.thumbGrip[side] = grip;
+                HandPanel::applyToModel(*model,
+                    handPanel.thumbGrip[0], handPanel.fingerGrip[0],
+                    handPanel.thumbGrip[1], handPanel.fingerGrip[1]);
+                model->update();
+                robotCollider.update();
+            };
 
-                    // Re-apply FK with corrected grip so Bullet sees correct poses
-                    HandPanel::applyToModel(*model,
-                        handPanel.thumbGrip[0], handPanel.fingerGrip[0],
-                        handPanel.thumbGrip[1], handPanel.fingerGrip[1]);
-                    model->update();
-                    robotCollider.update();
+            constexpr float kPenTol = 0.0005f;  // 0.5 mm tolerance
+
+            for(int side = 0; side < 2; ++side) {
+                if(handPanel.thumbGrip[side] <= 0.f) continue;
+
+                // Quick check at current grip — skip binary search if no overlap.
+                if(measurePen(side) <= kPenTol) continue;
+
+                // Binary search: find max grip with zero penetration.
+                // grip=0 is always safe; hi starts at the current desired grip.
+                float lo = 0.f;
+                float hi = handPanel.thumbGrip[side];
+                for(int iter = 0; iter < 8; ++iter) {
+                    float mid = 0.5f * (lo + hi);
+                    applyGrip(side, mid);
+                    if(measurePen(side) > kPenTol) hi = mid;
+                    else                            lo = mid;
                 }
+                // Commit the last safe grip (lo = last value with no penetration).
+                applyGrip(side, lo);
             }
         }
 

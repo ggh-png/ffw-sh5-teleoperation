@@ -13,16 +13,17 @@
 //   FINGER     (0x20)  kinematic finger convex hulls (separate from arm links)
 //
 // Interaction matrix:
-//   ground        ↔ everything
-//   table         ↔ can, chassis
-//   chassis       ↔ env, can
-//   arm links     ↔ can  (push can during approach; don't self-collide with arm)
-//   finger links  ↔ can, env (floor/table), other finger links (for penetration detection)
-//   can (free)    ↔ env, chassis, arm links, finger links, OTHER CANS
-//   can (dragged) ↔ env, chassis  (mouse drag: kinematic, no robot contact)
+//   ground plane    ↔ everything
+//   table / env box ↔ cans, chassis, FINGERS (fingers don't go through table)
+//   chassis         ↔ env, cans
+//   arm links       ↔ cans  (push during approach)
+//   finger links    ↔ cans (grasping), env floor+table (floor stop), no FINGER-FINGER
+//   can (free)      ↔ env, chassis, arm links, fingers, OTHER CANS
+//   can (dragged)   ↔ env, chassis  (mouse drag: kinematic)
 //
-// NOTE — kinematic fingers cannot be physically stopped by other kinematic fingers.
-//   FINGER↔FINGER contact manifolds are used only for grip-angle back-off in main.cpp.
+// FINGER↔FINGER: intentionally excluded from broadphase — kinematic bodies cannot
+//   physically respond to each other.  Thumb-finger penetration is detected via
+//   contactPairTest in main.cpp (bypasses broadphase) and fixed at the FK level.
 
 namespace ColGroup {
     static constexpr int ENV        = 1 << 0;
@@ -36,23 +37,27 @@ namespace ColGroup {
 
     // ── Static masks (set once at body creation) ─────────────────────────────
     static constexpr int MASK_ENV        = ALL;
-    static constexpr int MASK_TABLE      = OBJ | ROBOT_BASE;
+
+    // Table / static env boxes: cans, chassis, AND finger links.
+    // Without FINGER here, fingers would pass straight through the table top.
+    static constexpr int MASK_TABLE      = OBJ | ROBOT_BASE | FINGER;
+
     static constexpr int MASK_ROBOT_BASE = ENV | OBJ;
 
     // Arm links: only interact with graspable objects.
-    // Do NOT include ENV (would generate huge arm↔floor contact list every frame).
+    // Excluding ENV avoids generating arm↔floor manifolds on every frame.
     static constexpr int MASK_ROBOT_LINK = OBJ;
 
-    // Finger links: interact with objects (for grasping force), environment
-    // (fingers don't go through floor/table), and other finger links
-    // (for contactPairTest-based penetration detection in main.cpp).
-    static constexpr int MASK_FINGER = OBJ | ENV | FINGER;
+    // Finger links: contact with cans (grasping) and env (floor + table).
+    // FINGER↔FINGER is handled manually via contactPairTest in main.cpp.
+    static constexpr int MASK_FINGER = OBJ | ENV;
 
     // Legacy Featherstone mask (unused but kept for compatibility)
     static constexpr int MASK_HAND = ENV | OBJ | HAND;
 
     // ── Dynamic masks for GraspObj ────────────────────────────────────────────
-    // OBJ included in free mask → dynamic objects collide with each other.
+    // OBJ in free mask → dynamic objects (cans) collide with each other.
+    // FINGER in free mask → cans detect and respond to finger bodies.
     static constexpr int MASK_OBJ_FREE = ENV | ROBOT_BASE | ROBOT_LINK | FINGER | OBJ;
     static constexpr int MASK_OBJ_HELD = ENV | ROBOT_BASE;  // mouse drag: kinematic
     static constexpr int MASK_OBJ      = MASK_OBJ_FREE;
