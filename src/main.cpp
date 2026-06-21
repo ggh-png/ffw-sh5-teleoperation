@@ -164,6 +164,7 @@ int main(int argc, char** argv) {
     float dragObjRadius    = 0.033f;
     Vec3  dragClampPos     = {};
     Vec3  dragClampHalfExt = {10.f, 0.f, 10.f};
+    float tableTopY        = 0.f;  // world Y of the highest static box top surface
     {
         float bestTop = -1e9f;
         for(const auto& sb : physics.staticBoxStates()) {
@@ -174,6 +175,7 @@ int main(int argc, char** argv) {
                 dragClampHalfExt = sb.halfExtents;
             }
         }
+        if(bestTop > -1e8f) tableTopY = bestTop;
         auto initObjs = physics.objectStates();
         if(!initObjs.empty()) {
             dragObjHalfH  = initObjs[0].halfHeight;
@@ -185,6 +187,14 @@ int main(int argc, char** argv) {
     // ── Robot collision (kinematic ConvexHull per link, FK-driven) ──────────────
     RobotCollider robotCollider;
     robotCollider.build(physics.bulletWorld(), model->allNodes(), model->meshPaths);
+
+    // Arm link nodes used each frame to detect table penetration in IK mode.
+    // Only the structural arm links (not fingers/palm) are checked; these are the
+    // links most likely to dip below the table when the arm curves forward/down.
+    std::vector<SceneNode*> armNodes;
+    for(auto* n : model->allNodes())
+        if(n->name.rfind("arm_l_link", 0) == 0 || n->name.rfind("arm_r_link", 0) == 0)
+            armNodes.push_back(n);
 
     // Force wheel drive joints unlimited (continuous)
     for(const char* name : {"left_wheel_drive_joint",
@@ -729,6 +739,45 @@ int main(int argc, char** argv) {
             }
 
             model->update();  // final FK after all joint changes
+
+            // ── Arm-table penetration correction ─────────────────────────────
+            // After IK, check every arm link's world-Y.  If any link has dipped
+            // below the table surface (common when the arm curves forward/down),
+            // lift the IK world target and re-solve.  Converges in ≤5 steps.
+            // Only runs in standard IK mode (wrist-FK mode uses joints 1-4 only
+            // and rarely hits the table with those links).
+            if(tableTopY > 0.f && !jointPanel.ikUseOrientation) {
+                constexpr float kTableMargin = 0.005f;  // 5 mm safety gap
+                for(int iter = 0; iter < 5; ++iter) {
+                    float lift = 0.f;
+                    for(auto* n : armNodes) {
+                        float y = n->worldTransform.transformPoint({0,0,0}).y;
+                        float below = (tableTopY + kTableMargin) - y;
+                        if(below > lift) lift = below;
+                    }
+                    if(lift < 0.001f) break;
+
+                    ikWorldL.y += lift;
+                    ikWorldR.y += lift;
+
+                    // Clamp lifted target back inside workspace sphere
+                    if(shoulderL && maxReachL > 0.01f) {
+                        Vec3 sW = shoulderL->worldTransform.transformPoint({0,0,0});
+                        ikWorldL = InverseKinematics::clampToWorkspace(ikWorldL, sW, maxReachL);
+                    }
+                    if(shoulderR && maxReachR > 0.01f) {
+                        Vec3 sW = shoulderR->worldTransform.transformPoint({0,0,0});
+                        ikWorldR = InverseKinematics::clampToWorkspace(ikWorldR, sW, maxReachR);
+                    }
+
+                    IKConfig cfg; cfg.useOrientation = false;
+                    if(eeL) InverseKinematics::solve6(model->root.get(), eeL,
+                                ikWorldL, Quaternion::identity(), false, cfg, chainStop);
+                    if(eeR) InverseKinematics::solve6(model->root.get(), eeR,
+                                ikWorldR, Quaternion::identity(), false, cfg, chainStop);
+                    model->update();
+                }
+            }
 
             auto errDist = [](SceneNode* ee, const Vec3& tgt) -> float {
                 if(!ee) return 0.f;
