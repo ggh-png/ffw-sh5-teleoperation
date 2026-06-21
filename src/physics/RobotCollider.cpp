@@ -51,20 +51,24 @@ void RobotCollider::build(btMultiBodyDynamicsWorld* world,
         btTransform initT = fromMat4(node->worldTransform);
         lb.state = std::make_unique<btDefaultMotionState>(initT);
 
+        // Finger links get higher friction (0.9) to grip objects better.
+        // Arm links use standard friction (0.5).
+        const bool isFinger = (node->name.rfind("finger_", 0) == 0);
         btRigidBody::btRigidBodyConstructionInfo ci(
             0.f, lb.state.get(), lb.shape.get());
-        ci.m_restitution = 0.1f;
-        ci.m_friction    = 0.7f;
+        ci.m_restitution = 0.05f;
+        ci.m_friction    = isFinger ? 0.9f : 0.5f;
         lb.body = std::make_unique<btRigidBody>(ci);
         lb.body->setCollisionFlags(
             lb.body->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
         lb.body->setActivationState(DISABLE_DEACTIVATION);
 
-        // ROBOT_LINK with mask=0: invisible to Bullet's broadphase.
-        // Arm↔env contacts are tested explicitly via findStaticPenetrations
-        // (contactPairTest bypasses the broadphase filter), so these bodies
-        // will never inadvertently push the can through normal physics.
-        world->addRigidBody(lb.body.get(), ColGroup::ROBOT_LINK, ColGroup::MASK_ROBOT_LINK);
+        // Finger links → FINGER group (collides with OBJ, ENV, other FINGERs).
+        // Arm links   → ROBOT_LINK group (collides with OBJ only).
+        if(isFinger)
+            world->addRigidBody(lb.body.get(), ColGroup::FINGER, ColGroup::MASK_FINGER);
+        else
+            world->addRigidBody(lb.body.get(), ColGroup::ROBOT_LINK, ColGroup::MASK_ROBOT_LINK);
     }
 
     printf("[RobotCollider] built %d link bodies\n", (int)m_links.size());

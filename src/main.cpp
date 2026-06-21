@@ -15,6 +15,7 @@
 #include "robot/ForwardKinematics.hpp"
 #include "physics/RobotCollider.hpp"
 #include "io/SceneLoader.hpp"
+#include <BulletCollision/CollisionDispatch/btCollisionWorld.h>
 
 #include <cstdio>
 #include <stdexcept>
@@ -784,8 +785,85 @@ int main(int argc, char** argv) {
             }
         }
 
-        // ── Sync arm/finger collision bodies (kinematic, FK-driven), then step ──
+        // ── Sync arm/finger collision bodies (kinematic, FK-driven) ─────────
         robotCollider.update();
+
+        // ── Thumb–finger penetration prevention ──────────────────────────────
+        // Kinematic bodies cannot physically stop each other. We use
+        // contactPairTest (immediate narrow-phase GJK) to measure overlap and
+        // back off thumbGrip so the thumb never visually passes through the
+        // other fingers.  Converges in 1-2 frames at ≤60 fps.
+        {
+            // Callback: finds the deepest penetration across all contact points.
+            struct MaxDepthCB : btCollisionWorld::ContactResultCallback {
+                float maxDepth = 0.f;
+                MaxDepthCB() {
+                    // Bypass broadphase filter so kinematic↔kinematic is tested.
+                    m_collisionFilterGroup = -1;
+                    m_collisionFilterMask  = -1;
+                }
+                btScalar addSingleResult(btManifoldPoint& cp,
+                    const btCollisionObjectWrapper*, int, int,
+                    const btCollisionObjectWrapper*, int, int) override
+                {
+                    // getDistance() < 0 means overlap; depth = -distance
+                    float d = -cp.getDistance();
+                    if(d > maxDepth) maxDepth = d;
+                    return 0.f;
+                }
+            };
+
+            // Thumb bodies to check (proximal + distal = link3 and link4).
+            // Skip link1/2 (CMC/MCP base) — they rarely contact other fingers.
+            static const char* kThumbChk[2][2] = {
+                {"finger_l_link3", "finger_l_link4"},
+                {"finger_r_link3", "finger_r_link4"},
+            };
+            // Other-finger MCP roots that the thumb is most likely to hit.
+            // (index=5, middle=9, ring=13 — pinky=17 typically stays clear)
+            static const char* kFingerChk[2][3] = {
+                {"finger_l_link5", "finger_l_link9",  "finger_l_link13"},
+                {"finger_r_link5", "finger_r_link9",  "finger_r_link13"},
+            };
+
+            btCollisionWorld* bw = physics.bulletWorld();
+
+            for(int side = 0; side < 2; ++side) {
+                if(handPanel.thumbGrip[side] <= 0.f) continue;
+
+                // Measure max penetration depth between thumb tip and other fingers
+                float pen = 0.f;
+                for(int ti = 0; ti < 2; ++ti) {
+                    btRigidBody* tb = robotCollider.bodyForName(kThumbChk[side][ti]);
+                    if(!tb) continue;
+                    for(int fi = 0; fi < 3; ++fi) {
+                        btRigidBody* fb = robotCollider.bodyForName(kFingerChk[side][fi]);
+                        if(!fb) continue;
+                        MaxDepthCB cb;
+                        bw->contactPairTest(tb, fb, cb);
+                        if(cb.maxDepth > pen) pen = cb.maxDepth;
+                    }
+                }
+
+                if(pen > 0.001f) {  // > 1 mm geometric overlap → back off
+                    // Proportional back-off capped at 0.15 grip/frame.
+                    // At 60 fps this reduces grip by ≥9 units/s — fast enough
+                    // to feel responsive, slow enough to look smooth.
+                    float reduction = pen * 40.f;
+                    if(reduction > 0.15f) reduction = 0.15f;
+                    handPanel.thumbGrip[side] =
+                        std::max(0.f, handPanel.thumbGrip[side] - reduction);
+
+                    // Re-apply FK with corrected grip so Bullet sees correct poses
+                    HandPanel::applyToModel(*model,
+                        handPanel.thumbGrip[0], handPanel.fingerGrip[0],
+                        handPanel.thumbGrip[1], handPanel.fingerGrip[1]);
+                    model->update();
+                    robotCollider.update();
+                }
+            }
+        }
+
         physics.step(dt);
 
         // ── Sync renderer ─────────────────────────────────────────────────
